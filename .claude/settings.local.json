@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo check:*)",
+      "Bash(yarn build)",
+      "Bash(yarn add:*)",
+      "Bash(npx tailwindcss init -p)"
+    ]
+  }
+}
