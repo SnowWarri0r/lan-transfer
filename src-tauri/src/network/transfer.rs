@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use tauri::{Window, AppHandle, Emitter};
 use tokio::net::TcpListener;
-use tokio_tungstenite::accept_async;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::{accept_async_with_config};
+use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
@@ -55,44 +55,59 @@ pub fn start_discovery(window: Window) {
 async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error::Error>> {
     let devices: DeviceList = Arc::new(Mutex::new(HashMap::new()));
     let local_ip = get_local_ip()?;
-    let hostname = hostname::get()
-        .unwrap_or_else(|_| "Unknown".into())
-        .to_string_lossy()
-        .to_string();
+    let hostname = {
+        #[cfg(not(target_os = "android"))]
+        {
+            hostname::get()
+                .unwrap_or_else(|_| "Unknown".into())
+                .to_string_lossy()
+                .to_string()
+        }
+        #[cfg(target_os = "android")]
+        {
+            "Android".to_string()
+        }
+    };
 
     // 生成唯一实例 ID（用进程 ID）
     let instance_id = std::process::id().to_string();
+
+    // 组播地址（239.x.x.x 为管理范围组播地址）
+    let multicast_addr: Ipv4Addr = Ipv4Addr::new(239, 255, 77, 88);
 
     // 使用 socket2 创建可重用的 UDP socket
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     #[cfg(unix)]
     socket.set_reuse_port(true)?;
-    socket.set_broadcast(true)?;
     socket.set_nonblocking(true)?;
+    socket.set_multicast_ttl_v4(255)?;
 
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 37821);
     socket.bind(&addr.into())?;
 
+    // 加入组播组
+    socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED)?;
+
     // 转换为标准库的 UdpSocket
     let socket: UdpSocket = socket.into();
 
-    let broadcast_addr = "255.255.255.255:37821";
+    let multicast_target = SocketAddrV4::new(multicast_addr, 37821);
 
     // 克隆 socket 用于发送
     let socket_send = socket.try_clone()?;
     let instance_id_clone = instance_id.clone();
 
-    // 任务1：定期发送广播 (格式: FILETRANSFER:IP:HOSTNAME:INSTANCE_ID)
+    // 任务1：定期发送组播 (格式: FILETRANSFER:IP:HOSTNAME:INSTANCE_ID)
     tokio::spawn(async move {
         loop {
-            let broadcast_msg = format!("FILETRANSFER:{}:{}:{}", local_ip, hostname, instance_id_clone);
-            let _ = socket_send.send_to(broadcast_msg.as_bytes(), broadcast_addr);
+            let msg = format!("FILETRANSFER:{}:{}:{}", local_ip, hostname, instance_id_clone);
+            let _ = socket_send.send_to(msg.as_bytes(), multicast_target);
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
     });
 
-    // 任务2：接收广播并更新设备列表
+    // 任务2：接收组播并更新设备列表
     let devices_clone = devices.clone();
     let window_clone = window.clone();
 
@@ -163,11 +178,25 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
 
 #[tauri::command]
 /// 获取系统下载目录
-pub fn get_download_dir() -> Result<String, String> {
-    dirs::download_dir()
-        .or_else(|| dirs::home_dir())
-        .map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| "无法获取下载目录".to_string())
+pub fn get_download_dir(app: AppHandle) -> Result<String, String> {
+    // 桌面端：使用系统下载目录
+    if let Some(dir) = dirs::download_dir().or_else(|| dirs::home_dir()) {
+        return Ok(dir.to_string_lossy().to_string());
+    }
+
+    // Android 回退：使用应用数据目录下的 Downloads
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        if let Ok(path) = app.path().app_data_dir() {
+            let download_path = path.join("Downloads");
+            let _ = std::fs::create_dir_all(&download_path);
+            return Ok(download_path.to_string_lossy().to_string());
+        }
+    }
+
+    let _ = app; // 桌面端避免 unused 警告
+    Err("无法获取下载目录".to_string())
 }
 
 #[tauri::command]
@@ -189,22 +218,35 @@ pub fn get_local_ip() -> Result<String, String> {
 #[tauri::command]
 /// 弹出文件夹选择对话框并返回路径字符串
 pub async fn select_folder(app: AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-    use std::sync::mpsc;
-    
-    let (tx, rx) = mpsc::channel();
-    
-    app.dialog().file().pick_folder(move |folder_path| {
-        let _ = tx.send(folder_path);
-    });
-    
-    match rx.recv() {
-        Ok(Some(fp)) => {
-            let pathbuf = fp.into_path().map_err(|e| e.to_string())?;
-            Ok(Some(pathbuf.to_string_lossy().to_string()))
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_dialog::DialogExt;
+        use std::sync::mpsc;
+
+        let (tx, rx) = mpsc::channel();
+
+        app.dialog().file().pick_folder(move |folder_path| {
+            let _ = tx.send(folder_path);
+        });
+
+        match rx.recv() {
+            Ok(Some(fp)) => {
+                let pathbuf = fp.into_path().map_err(|e| e.to_string())?;
+                Ok(Some(pathbuf.to_string_lossy().to_string()))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Failed to receive dialog result: {}", e)),
         }
-        Ok(None) => Ok(None),
-        Err(e) => Err(format!("Failed to receive dialog result: {}", e)),
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        use tauri::Manager;
+        let path = app.path().app_data_dir()
+            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
+        let download_path = path.join("Downloads");
+        let _ = std::fs::create_dir_all(&download_path);
+        Ok(Some(download_path.to_string_lossy().to_string()))
     }
 }
 
@@ -250,7 +292,12 @@ async fn handle_websocket_connection(
     save_dir: String,
     window: Window,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ws_stream = accept_async(stream).await?;
+    let ws_config = WebSocketConfig {
+        max_message_size: None,
+        max_frame_size: None,
+        ..Default::default()
+    };
+    let ws_stream = accept_async_with_config(stream, Some(ws_config)).await?;
     let (_write, mut read) = ws_stream.split();
 
     let mut file: Option<File> = None;

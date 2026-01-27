@@ -106,19 +106,37 @@ export default function App() {
   const sendFile = async (ip: string) => {
     if (!file) return;
 
+    const HIGH_WATER_MARK = 4 * 1024 * 1024; // 4MB buffer threshold
+
     setSendStatus('sending');
     setSendingTo(ip);
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
       const socket = new WebSocket(`ws://${ip}:7878`);
       socket.binaryType = 'arraybuffer';
       let hasError = false;
 
-      socket.onopen = () => {
-        socket.send(JSON.stringify({ name: file.name }));
-        socket.send(arrayBuffer);
-        socket.close();
+      socket.onopen = async () => {
+        try {
+          socket.send(JSON.stringify({ name: file.name }));
+
+          const reader = file.stream().getReader();
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // Back-pressure: wait if send buffer is congested
+            while (socket.bufferedAmount > HIGH_WATER_MARK) {
+              await new Promise((r) => setTimeout(r, 50));
+            }
+            socket.send(value);
+          }
+          socket.close();
+        } catch {
+          hasError = true;
+          setSendStatus('error');
+          setSelectedDevice(null);
+        }
       };
 
       socket.onerror = () => {
