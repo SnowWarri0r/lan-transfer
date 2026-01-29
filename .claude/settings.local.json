@@ -4,7 +4,28 @@
       "Bash(cargo check:*)",
       "Bash(yarn build)",
       "Bash(yarn add:*)",
-      "Bash(npx tailwindcss init -p)"
+      "Bash(npx tailwindcss init -p)",
+      "WebSearch",
+      "Bash(yarn tauri android build:*)",
+      "Bash(adb devices:*)",
+      "Bash(adb:*)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(yarn tauri dev:*)",
+      "Bash(timeout 5 tail:*)",
+      "Bash(tasklist:*)",
+      "Bash(curl:*)",
+      "Bash(yarn tauri build:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:v2.tauri.app)",
+      "Bash(yarn tauri android:*)",
+      "Bash(findstr:*)",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git tag:*)"
     ]
   }
 }

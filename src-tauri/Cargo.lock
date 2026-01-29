@@ -1785,6 +1785,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "lan-transfer"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "dirs 5.0.1",
+ "futures-util",
+ "hostname",
+ "serde",
+ "serde_json",
+ "socket2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3633,24 +3651,6 @@ dependencies = [
  "webview2-com",
  "window-vibrancy",
  "windows",
-]
-
-[[package]]
-name = "tauri-app"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "dirs 5.0.1",
- "futures-util",
- "hostname",
- "serde",
- "serde_json",
- "socket2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]
