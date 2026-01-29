@@ -20,6 +20,8 @@ export default function App() {
   const [mode, setMode] = useState<Mode>('select');
   const [file, setFile] = useState<File | null>(null);
   const [saveDir, setSaveDir] = useState<string | null>(null);
+  const [editingSaveDir, setEditingSaveDir] = useState<boolean>(false);
+  const [saveDirInput, setSaveDirInput] = useState<string>('');
   const [targetIp, setTargetIp] = useState<string>('');
   const [localIp, setLocalIp] = useState<string>('获取中...');
   const [isReceiving, setIsReceiving] = useState<boolean>(false);
@@ -29,6 +31,23 @@ export default function App() {
   const [sendingTo, setSendingTo] = useState<string>('');
   const [receivedFiles, setReceivedFiles] = useState<ReceivedFile[]>([]);
   const [receivingFile, setReceivingFile] = useState<string | null>(null);
+
+  // 检测是否为 Android 平台
+  const [isAndroid, setIsAndroid] = useState<boolean>(false);
+
+  useEffect(() => {
+    // 检测平台
+    const checkPlatform = async () => {
+      try {
+        const platform = await invoke<string>('plugin:os|platform');
+        setIsAndroid(platform === 'android');
+      } catch {
+        // 回退检测方法
+        setIsAndroid(navigator.userAgent.toLowerCase().includes('android'));
+      }
+    };
+    checkPlatform();
+  }, []);
 
   useEffect(() => {
     invoke<string>('get_local_ip')
@@ -72,13 +91,36 @@ export default function App() {
   }, [mode]);
 
   const handlePickFolder = async () => {
-    const selected: string | null = await invoke("select_folder");
-    if (selected) {
-      setSaveDir(selected);
+    try {
+      const selected: string | null = await invoke("select_folder");
+      if (selected && selected !== saveDir) {
+        setSaveDir(selected);
+        if (mode === 'receive') {
+          invoke('start_websocket_server', { saveDir: selected });
+          setIsReceiving(true);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to select folder:', error);
+    }
+  };
+
+  const handleQuickSelectPath = (path: string) => {
+    setSaveDir(path);
+    if (mode === 'receive') {
+      invoke('start_websocket_server', { saveDir: path });
+      setIsReceiving(true);
+    }
+  };
+
+  const handleSaveDirInputChange = () => {
+    if (saveDirInput.trim()) {
+      setSaveDir(saveDirInput.trim());
       if (mode === 'receive') {
-        invoke('start_websocket_server', { saveDir: selected });
+        invoke('start_websocket_server', { saveDir: saveDirInput.trim() });
         setIsReceiving(true);
       }
+      setEditingSaveDir(false);
     }
   };
 
@@ -291,12 +333,12 @@ export default function App() {
                   value={targetIp}
                   onChange={(e) => setTargetIp(e.target.value)}
                   placeholder="例如: 192.168.1.100"
-                  className="flex-1 px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="flex-1 min-w-0 px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
                 <button
                   onClick={handleSendManual}
                   disabled={sendStatus === 'sending'}
-                  className={`px-6 py-2 font-medium rounded-lg transition ${
+                  className={`px-4 py-2 font-medium rounded-lg transition whitespace-nowrap shrink-0 ${
                     sendStatus === 'sending'
                       ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                       : 'bg-blue-500 text-white hover:bg-blue-600'
@@ -337,13 +379,110 @@ export default function App() {
             {/* 保存目录 */}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">保存目录</label>
-              <button
-                onClick={handlePickFolder}
-                className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition font-medium"
-              >
-                更改保存目录
-              </button>
-              {saveDir && <p className="text-sm text-slate-600 mt-2 font-mono bg-slate-50 p-2 rounded">{saveDir}</p>}
+
+              {/* 桌面端：显示选择文件夹按钮 */}
+              {!isAndroid && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  <button
+                    onClick={handlePickFolder}
+                    className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition font-medium text-sm"
+                  >
+                    选择文件夹
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditingSaveDir(true);
+                      setSaveDirInput(saveDir || '');
+                    }}
+                    className="px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 transition font-medium text-sm"
+                  >
+                    手动输入
+                  </button>
+                </div>
+              )}
+
+              {/* Android：SAF 文件夹选择 + 常用路径快速选择 */}
+              {isAndroid && (
+                <div className="space-y-2 mb-3">
+                  <p className="text-xs text-slate-500">选择保存位置：</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handlePickFolder}
+                      className="px-3 py-2 rounded-lg border-2 border-amber-300 bg-amber-50 hover:border-amber-500 transition text-left overflow-hidden"
+                    >
+                      <div className="font-medium text-xs text-amber-800 truncate">📂 选择文件夹</div>
+                      <div className="text-xs text-amber-500 mt-0.5 truncate">系统文件选择器</div>
+                    </button>
+                    <button
+                      onClick={() => handleQuickSelectPath('/storage/emulated/0/Download')}
+                      className={`px-3 py-2 rounded-lg border-2 transition text-left overflow-hidden ${
+                        saveDir === '/storage/emulated/0/Download'
+                          ? 'border-green-500 bg-green-50'
+                          : 'border-slate-200 bg-white hover:border-green-300'
+                      }`}
+                    >
+                      <div className="font-medium text-xs text-slate-800 truncate">📥 下载目录</div>
+                      <div className="text-xs text-slate-400 mt-0.5 truncate">/storage/.../Download</div>
+                    </button>
+                    <button
+                      onClick={() => handleQuickSelectPath('/storage/emulated/0/Documents')}
+                      className={`px-3 py-2 rounded-lg border-2 transition text-left overflow-hidden ${
+                        saveDir === '/storage/emulated/0/Documents'
+                          ? 'border-green-500 bg-green-50'
+                          : 'border-slate-200 bg-white hover:border-green-300'
+                      }`}
+                    >
+                      <div className="font-medium text-xs text-slate-800 truncate">📄 文档目录</div>
+                      <div className="text-xs text-slate-400 mt-0.5 truncate">/storage/.../Documents</div>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingSaveDir(true);
+                        setSaveDirInput(saveDir || '');
+                      }}
+                      className="px-3 py-2 rounded-lg border-2 border-slate-200 bg-white hover:border-amber-300 transition text-left overflow-hidden"
+                    >
+                      <div className="font-medium text-xs text-slate-800 truncate">✏️ 自定义</div>
+                      <div className="text-xs text-slate-400 mt-0.5 truncate">输入路径</div>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 自定义路径输入 */}
+              {editingSaveDir && (
+                <div className="space-y-2 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                  <input
+                    type="text"
+                    value={saveDirInput}
+                    onChange={(e) => setSaveDirInput(e.target.value)}
+                    placeholder="/storage/emulated/0/Download"
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono text-sm"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveDirInputChange}
+                      className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition font-medium text-sm"
+                    >
+                      确认
+                    </button>
+                    <button
+                      onClick={() => setEditingSaveDir(false)}
+                      className="px-4 py-2 bg-slate-300 text-slate-700 rounded-lg hover:bg-slate-400 transition font-medium text-sm"
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 当前选中的路径 */}
+              {saveDir && !editingSaveDir && (
+                <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded-lg">
+                  <div className="text-xs text-green-600 mb-1">当前保存位置：</div>
+                  <div className="text-sm text-slate-700 font-mono break-all">{saveDir}</div>
+                </div>
+              )}
             </div>
 
             {/* 接收状态 */}

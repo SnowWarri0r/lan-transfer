@@ -1,5 +1,11 @@
 use std::path::PathBuf;
 use tauri::{Window, AppHandle, Emitter};
+#[cfg(target_os = "android")]
+use crate::android_storage::AndroidStorage;
+#[cfg(target_os = "android")]
+use base64::{engine::general_purpose, Engine as _};
+#[cfg(target_os = "android")]
+use tauri::Manager;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async_with_config};
 use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
@@ -69,10 +75,10 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
         }
     };
 
-    // 生成唯一实例 ID（用进程 ID）
+    // 生成唯一实例 ID（用进程 ID�?
     let instance_id = std::process::id().to_string();
 
-    // 组播地址（239.x.x.x 为管理范围组播地址）
+    // 组播地址�?39.x.x.x 为管理范围组播地址�?
     let multicast_addr: Ipv4Addr = Ipv4Addr::new(239, 255, 77, 88);
 
     // 使用 socket2 创建可重用的 UDP socket
@@ -86,19 +92,19 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 37821);
     socket.bind(&addr.into())?;
 
-    // 加入组播组
+    // 加入组播�?
     socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED)?;
 
-    // 转换为标准库的 UdpSocket
+    // 转换为标准库�?UdpSocket
     let socket: UdpSocket = socket.into();
 
     let multicast_target = SocketAddrV4::new(multicast_addr, 37821);
 
-    // 克隆 socket 用于发送
+    // 克隆 socket 用于发�?
     let socket_send = socket.try_clone()?;
     let instance_id_clone = instance_id.clone();
 
-    // 任务1：定期发送组播 (格式: FILETRANSFER:IP:HOSTNAME:INSTANCE_ID)
+    // 任务1：定期发送组�?(格式: FILETRANSFER:IP:HOSTNAME:INSTANCE_ID)
     tokio::spawn(async move {
         loop {
             let msg = format!("FILETRANSFER:{}:{}:{}", local_ip, hostname, instance_id_clone);
@@ -124,7 +130,7 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
                                 let hostname = parts[1].to_string();
                                 let remote_instance_id = parts[2];
 
-                                // 用实例 ID 判断是否是自己（而不是 IP）
+                                // 用实�?ID 判断是否是自己（而不�?IP�?
                                 if remote_instance_id != instance_id {
                                     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
                                     let device = Device {
@@ -134,7 +140,7 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
                                     };
 
                                     let mut devices = devices_clone.lock().unwrap();
-                                    // 用 IP+实例ID 作为 key，支持同机器多实例
+                                    // �?IP+实例ID 作为 key，支持同机器多实�?
                                     let key = format!("{}:{}", ip, remote_instance_id);
                                     devices.insert(key, device);
 
@@ -147,7 +153,7 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // 非阻塞模式下没有数据，正常情况
+                    // 非阻塞模式下没有数据，正常情�?
                 }
                 Err(e) => {
                     eprintln!("UDP recv error: {}", e);
@@ -157,7 +163,7 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
         }
     });
 
-    // 任务3：定期清理过期设备（30秒未响应）
+    // 任务3：定期清理过期设备（30秒未响应�?
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
@@ -184,7 +190,7 @@ pub fn get_download_dir(app: AppHandle) -> Result<String, String> {
         return Ok(dir.to_string_lossy().to_string());
     }
 
-    // Android 回退：使用应用数据目录下的 Downloads
+    // Android 回退：使用应用数据目录下�?Downloads
     #[cfg(target_os = "android")]
     {
         use tauri::Manager;
@@ -195,7 +201,7 @@ pub fn get_download_dir(app: AppHandle) -> Result<String, String> {
         }
     }
 
-    let _ = app; // 桌面端避免 unused 警告
+    let _ = app; // 桌面端避�?unused 警告
     Err("无法获取下载目录".to_string())
 }
 
@@ -216,42 +222,34 @@ pub fn get_local_ip() -> Result<String, String> {
 }
 
 #[tauri::command]
-/// 弹出文件夹选择对话框并返回路径字符串
+/// 弹出文件夹选择对话框并返回路径字符�?
 pub async fn select_folder(app: AppHandle) -> Result<Option<String>, String> {
     #[cfg(not(target_os = "android"))]
     {
         use tauri_plugin_dialog::DialogExt;
-        use std::sync::mpsc;
 
-        let (tx, rx) = mpsc::channel();
+        // 使用 blocking 版本适合异步命令
+        let folder_path = app.dialog().file().blocking_pick_folder();
 
-        app.dialog().file().pick_folder(move |folder_path| {
-            let _ = tx.send(folder_path);
-        });
-
-        match rx.recv() {
-            Ok(Some(fp)) => {
+        match folder_path {
+            Some(fp) => {
                 let pathbuf = fp.into_path().map_err(|e| e.to_string())?;
                 Ok(Some(pathbuf.to_string_lossy().to_string()))
             }
-            Ok(None) => Ok(None),
-            Err(e) => Err(format!("Failed to receive dialog result: {}", e)),
+            None => Ok(None),
         }
     }
 
+    // Android: 使用 SAF 选择文件夹并返回 tree Uri
     #[cfg(target_os = "android")]
     {
-        use tauri::Manager;
-        let path = app.path().app_data_dir()
-            .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-        let download_path = path.join("Downloads");
-        let _ = std::fs::create_dir_all(&download_path);
-        Ok(Some(download_path.to_string_lossy().to_string()))
+        let storage = app.state::<AndroidStorage>();
+        storage.pick_folder()
     }
 }
 
 #[tauri::command]
-pub fn start_websocket_server(save_dir: String, window: Window) {
+pub fn start_websocket_server(save_dir: String, window: Window, app: AppHandle) {
     // 防止重复启动
     if WEBSOCKET_RUNNING.swap(true, Ordering::SeqCst) {
         println!("WebSocket server already running");
@@ -261,7 +259,7 @@ pub fn start_websocket_server(save_dir: String, window: Window) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            if let Err(e) = run_websocket_server(save_dir, window).await {
+            if let Err(e) = run_websocket_server(save_dir, window, app).await {
                 eprintln!("WebSocket server error: {}", e);
                 WEBSOCKET_RUNNING.store(false, Ordering::SeqCst);
             }
@@ -269,16 +267,17 @@ pub fn start_websocket_server(save_dir: String, window: Window) {
     });
 }
 
-async fn run_websocket_server(save_dir: String, window: Window) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_websocket_server(save_dir: String, window: Window, app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:7878").await?;
     println!("WebSocket server listening on ws://0.0.0.0:7878");
 
     while let Ok((stream, _)) = listener.accept().await {
         let save_dir = save_dir.clone();
         let window = window.clone();
+        let app = app.clone();
         
         tokio::spawn(async move {
-            if let Err(e) = handle_websocket_connection(stream, save_dir, window).await {
+            if let Err(e) = handle_websocket_connection(stream, save_dir, window, app).await {
                 eprintln!("WebSocket connection error: {}", e);
             }
         });
@@ -291,6 +290,7 @@ async fn handle_websocket_connection(
     stream: tokio::net::TcpStream,
     save_dir: String,
     window: Window,
+    app: AppHandle,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_config = WebSocketConfig {
         max_message_size: None,
@@ -301,22 +301,43 @@ async fn handle_websocket_connection(
     let (_write, mut read) = ws_stream.split();
 
     let mut file: Option<File> = None;
+    #[cfg(target_os = "android")]
+    let mut writer_handle: Option<i64> = None;
     let mut file_name: Option<String> = None;
     let mut bytes_received: u64 = 0;
+    #[cfg(target_os = "android")]
+    let is_content_uri = save_dir.starts_with("content://");
 
     while let Some(msg_result) = read.next().await {
         match msg_result? {
             Message::Text(json_str) => {
                 if let Ok(meta) = serde_json::from_str::<FileMeta>(&json_str) {
+                    file_name = Some(meta.name.clone());
+
+                    #[cfg(target_os = "android")]
+                    if is_content_uri {
+                        let storage = app.state::<AndroidStorage>();
+                        match storage.open_writer(save_dir.clone(), meta.name.clone()) {
+                            Ok(handle) => {
+                                writer_handle = Some(handle);
+                                println!("Receiving file via SAF: {}", meta.name);
+                                let _ = window.emit("file-receiving", &meta.name);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to open SAF writer: {}", e);
+                            }
+                        }
+                        continue;
+                    }
+
                     let mut full_path = PathBuf::from(&save_dir);
                     full_path.push(&meta.name);
-                    file_name = Some(meta.name.clone());
 
                     match File::create(&full_path).await {
                         Ok(f) => {
                             file = Some(f);
                             println!("Receiving file: {}", full_path.display());
-                            // 通知前端开始接收
+                            // 
                             let _ = window.emit("file-receiving", &meta.name);
                         }
                         Err(e) => {
@@ -326,6 +347,19 @@ async fn handle_websocket_connection(
                 }
             }
             Message::Binary(data) => {
+                #[cfg(target_os = "android")]
+                if is_content_uri {
+                    if let Some(handle) = writer_handle {
+                        let storage = app.state::<AndroidStorage>();
+                        let encoded = general_purpose::STANDARD.encode(&data);
+                        bytes_received += data.len() as u64;
+                        if let Err(e) = storage.write_chunk(handle, encoded) {
+                            eprintln!("Failed to write chunk via SAF: {}", e);
+                        }
+                        continue;
+                    }
+                }
+
                 if let Some(f) = file.as_mut() {
                     bytes_received += data.len() as u64;
                     if let Err(e) = f.write_all(&data).await {
@@ -338,6 +372,15 @@ async fn handle_websocket_connection(
                 break;
             }
             _ => {}
+        }
+    }
+
+    // 关闭 SAF writer
+    #[cfg(target_os = "android")]
+    if let Some(handle) = writer_handle {
+        let storage = app.state::<AndroidStorage>();
+        if let Err(e) = storage.close_writer(handle) {
+            eprintln!("Failed to close SAF writer: {}", e);
         }
     }
 
@@ -357,3 +400,4 @@ async fn handle_websocket_connection(
 
     Ok(())
 }
+
