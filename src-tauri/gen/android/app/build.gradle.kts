@@ -15,10 +15,10 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 34
-    namespace = "com.tauri_app.app"
+    namespace = "com.lantransfer.app"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "true"
-        applicationId = "com.tauri_app.app"
+        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        applicationId = "com.lantransfer.app"
         minSdk = 24
         targetSdk = 34
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

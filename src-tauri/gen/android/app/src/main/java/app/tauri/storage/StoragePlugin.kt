@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
-import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -14,21 +13,22 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import app.tauri.plugin.Plugin
-import org.json.JSONObject
 import java.io.OutputStream
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
+import android.util.Base64
+
+@InvokeArg
+internal class PickFolderArgs
 
 @InvokeArg
 internal class OpenWriterArgs {
-    lateinit var tree_uri: String
-    lateinit var file_name: String
+    lateinit var treeUri: String
+    lateinit var fileName: String
 }
 
 @InvokeArg
 internal class WriteChunkArgs {
     var handle: Long = 0
-    lateinit var data_base64: String
+    lateinit var data: String
 }
 
 @InvokeArg
@@ -38,113 +38,121 @@ internal class CloseWriterArgs {
 
 @TauriPlugin
 class StoragePlugin(private val activity: Activity) : Plugin(activity) {
-
+    private val outputStreams = mutableMapOf<Long, OutputStream>()
+    private var nextHandle: Long = 1
     private var pendingInvoke: Invoke? = null
-    private val writers = ConcurrentHashMap<Long, OutputStream>()
-    private val nextHandle = AtomicLong(1)
+    private lateinit var pickFolderLauncher: ActivityResultLauncher<Intent>
 
-    private val folderPickerLauncher: ActivityResultLauncher<Uri?> =
-        (activity as ComponentActivity).activityResultRegistry.register(
-            "storage_pick_folder",
-            ActivityResultContracts.OpenDocumentTree()
-        ) { uri: Uri? ->
+    init {
+        // 使用 activityResultRegistry.register 而不是 registerForActivityResult
+        // 因为插件初始化时 Activity 可能已经 STARTED，会抛 IllegalStateException
+        pickFolderLauncher = (activity as ComponentActivity).activityResultRegistry.register(
+            "pickFolder",
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
             val invoke = pendingInvoke ?: return@register
             pendingInvoke = null
 
-            val result = JSObject()
-            if (uri != null) {
-                // Persist read/write permission across device reboots
-                val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                activity.contentResolver.takePersistableUriPermission(uri, flags)
-                result.put("uri", uri.toString())
+            if (result.resultCode == Activity.RESULT_OK) {
+                val uri = result.data?.data
+                if (uri != null) {
+                    // 持久化权限
+                    activity.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                    val ret = JSObject()
+                    ret.put("uri", uri.toString())
+                    invoke.resolve(ret)
+                } else {
+                    invoke.reject("No URI returned")
+                }
             } else {
-                result.put("uri", JSONObject.NULL)
+                invoke.reject("User cancelled")
             }
-            invoke.resolve(result)
         }
+    }
 
     @Command
     fun pickFolder(invoke: Invoke) {
         pendingInvoke = invoke
-        folderPickerLauncher.launch(null)
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        pickFolderLauncher.launch(intent)
     }
 
     @Command
     fun openWriter(invoke: Invoke) {
+        val args = invoke.parseArgs(OpenWriterArgs::class.java)
+        val treeUri = Uri.parse(args.treeUri)
+        val docUri = DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri)
+        )
+
         try {
-            val args = invoke.parseArgs(OpenWriterArgs::class.java)
-
-            val treeUri = Uri.parse(args.tree_uri)
-            val docId = DocumentsContract.getTreeDocumentId(treeUri)
-            val dirUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-
             val fileUri = DocumentsContract.createDocument(
-                activity.contentResolver, dirUri, "application/octet-stream", args.file_name
-            )
-
-            if (fileUri == null) {
-                invoke.reject("Failed to create file")
+                activity.contentResolver,
+                docUri,
+                "application/octet-stream",
+                args.fileName
+            ) ?: run {
+                invoke.reject("Failed to create document")
                 return
             }
 
-            val outputStream = activity.contentResolver.openOutputStream(fileUri)
-            if (outputStream == null) {
+            val outputStream = activity.contentResolver.openOutputStream(fileUri) ?: run {
                 invoke.reject("Failed to open output stream")
                 return
             }
 
-            val handle = nextHandle.getAndIncrement()
-            writers[handle] = outputStream
+            val handle = nextHandle++
+            outputStreams[handle] = outputStream
 
-            val result = JSObject()
-            result.put("handle", handle)
-            invoke.resolve(result)
+            val ret = JSObject()
+            ret.put("handle", handle)
+            invoke.resolve(ret)
         } catch (e: Exception) {
-            invoke.reject("openWriter failed: ${e.message}")
+            invoke.reject("Error: ${e.message}")
         }
     }
 
     @Command
     fun writeChunk(invoke: Invoke) {
+        val args = invoke.parseArgs(WriteChunkArgs::class.java)
+        val outputStream = outputStreams[args.handle]
+
+        if (outputStream == null) {
+            invoke.reject("Invalid handle")
+            return
+        }
+
         try {
-            val args = invoke.parseArgs(WriteChunkArgs::class.java)
-
-            val outputStream = writers[args.handle]
-            if (outputStream == null) {
-                invoke.reject("Invalid writer handle: ${args.handle}")
-                return
-            }
-
-            val bytes: ByteArray = Base64.decode(args.data_base64, Base64.NO_WRAP)
+            val bytes = Base64.decode(args.data, Base64.DEFAULT)
             outputStream.write(bytes)
-
-            val result = JSObject()
-            result.put("ok", true)
-            invoke.resolve(result)
+            invoke.resolve()
         } catch (e: Exception) {
-            invoke.reject("writeChunk failed: ${e.message}")
+            invoke.reject("Write error: ${e.message}")
         }
     }
 
     @Command
     fun closeWriter(invoke: Invoke) {
-        try {
-            val args = invoke.parseArgs(CloseWriterArgs::class.java)
-            val outputStream = writers.remove(args.handle)
-            if (outputStream == null) {
-                invoke.reject("Invalid writer handle: ${args.handle}")
-                return
-            }
+        val args = invoke.parseArgs(CloseWriterArgs::class.java)
+        val outputStream = outputStreams.remove(args.handle)
 
+        if (outputStream == null) {
+            invoke.reject("Invalid handle")
+            return
+        }
+
+        try {
             outputStream.flush()
             outputStream.close()
-
-            val result = JSObject()
-            result.put("ok", true)
-            invoke.resolve(result)
+            invoke.resolve()
         } catch (e: Exception) {
-            invoke.reject("closeWriter failed: ${e.message}")
+            invoke.reject("Close error: ${e.message}")
         }
     }
 }
