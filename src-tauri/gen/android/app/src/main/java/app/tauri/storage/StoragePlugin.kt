@@ -21,14 +21,14 @@ internal class PickFolderArgs
 
 @InvokeArg
 internal class OpenWriterArgs {
-    lateinit var treeUri: String
-    lateinit var fileName: String
+    lateinit var tree_uri: String
+    lateinit var file_name: String
 }
 
 @InvokeArg
 internal class WriteChunkArgs {
     var handle: Long = 0
-    lateinit var data: String
+    lateinit var data_base64: String
 }
 
 @InvokeArg
@@ -85,7 +85,7 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
     @Command
     fun openWriter(invoke: Invoke) {
         val args = invoke.parseArgs(OpenWriterArgs::class.java)
-        val treeUri = Uri.parse(args.treeUri)
+        val treeUri = Uri.parse(args.tree_uri)
         val docUri = DocumentsContract.buildDocumentUriUsingTree(
             treeUri,
             DocumentsContract.getTreeDocumentId(treeUri)
@@ -96,7 +96,7 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
                 activity.contentResolver,
                 docUri,
                 "application/octet-stream",
-                args.fileName
+                args.file_name
             ) ?: run {
                 invoke.reject("Failed to create document")
                 return
@@ -129,7 +129,7 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
         }
 
         try {
-            val bytes = Base64.decode(args.data, Base64.DEFAULT)
+            val bytes = Base64.decode(args.data_base64, Base64.DEFAULT)
             outputStream.write(bytes)
             invoke.resolve()
         } catch (e: Exception) {
