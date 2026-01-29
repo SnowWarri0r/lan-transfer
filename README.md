@@ -1,8 +1,22 @@
+<div align="center">
+
 # LAN Transfer
 
-> Lightweight cross-platform LAN file transfer app built with Tauri v2
+**Lightweight cross-platform LAN file transfer app built with Tauri v2**
 
-A fast, zero-config file transfer tool for local networks. Select a file, pick a device, and send — no cloud, no account, no internet required.
+[![Stars](https://img.shields.io/github/stars/SnowWarri0r/lan-transfer?style=flat-square&logo=github&color=yellow)](https://github.com/SnowWarri0r/lan-transfer/stargazers)
+[![License](https://img.shields.io/github/license/SnowWarri0r/lan-transfer?style=flat-square&color=blue)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/SnowWarri0r/lan-transfer?style=flat-square&color=green&label=release)](https://github.com/SnowWarri0r/lan-transfer/releases)
+[![Rust](https://img.shields.io/badge/Rust-1.70+-f74c00?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Tauri](https://img.shields.io/badge/Tauri-v2-24c8db?style=flat-square&logo=tauri&logoColor=white)](https://v2.tauri.app/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20Android-brightgreen?style=flat-square)]()
+
+A fast, zero-config file transfer tool for local networks.
+Select a file, pick a device, and send — no cloud, no account, no internet required.
+
+</div>
+
+---
 
 ## Features
 
@@ -109,6 +123,18 @@ src-tauri/gen/android/.../
 | 37821 | UDP      | Device discovery (multicast 239.255.77.88) |
 | 7878  | TCP/WS   | File transfer |
 
+## Contributing
+
+Issues and PRs are welcome! Feel free to open an [issue](https://github.com/SnowWarri0r/lan-transfer/issues) for bug reports or feature requests.
+
 ## License
 
-MIT
+[MIT](LICENSE) &copy; [SnowWarri0r](https://github.com/SnowWarri0r)
+
+---
+
+<div align="center">
+
+If this project helps you, consider giving it a :star:
+
+</div>
