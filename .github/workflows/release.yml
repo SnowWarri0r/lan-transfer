@@ -73,6 +73,7 @@ jobs:
         run: |
           sdkmanager "ndk;26.1.10909125"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
+          echo "NDK_HOME=$ANDROID_SDK_ROOT/ndk/26.1.10909125" >> $GITHUB_ENV
 
       - name: Install Rust Android targets
         run: |
