@@ -40,7 +40,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'LAN Transfer ${{ github.ref_name }}'
           releaseBody: 'See the assets to download this version and install.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -93,7 +93,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: 'LAN Transfer ${{ github.ref_name }}'
-          draft: true
+          draft: false
           files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
