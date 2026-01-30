@@ -37,6 +37,8 @@ type DeviceList = Arc<Mutex<HashMap<String, Device>>>;
 // 全局状态：防止服务重复启动
 static DISCOVERY_RUNNING: AtomicBool = AtomicBool::new(false);
 static WEBSOCKET_RUNNING: AtomicBool = AtomicBool::new(false);
+// 当前保存目录（可在服务器运行期间更新）
+static CURRENT_SAVE_DIR: Mutex<String> = Mutex::new(String::new());
 
 #[tauri::command]
 /// 启动设备发现服务
@@ -250,16 +252,19 @@ pub async fn select_folder(app: AppHandle) -> Result<Option<String>, String> {
 
 #[tauri::command]
 pub fn start_websocket_server(save_dir: String, window: Window, app: AppHandle) {
-    // 防止重复启动
+    // 始终更新保存目录（即使服务器已在运行）
+    *CURRENT_SAVE_DIR.lock().unwrap() = save_dir;
+
+    // 仅在服务器未运行时启动
     if WEBSOCKET_RUNNING.swap(true, Ordering::SeqCst) {
-        println!("WebSocket server already running");
+        println!("WebSocket server already running, save directory updated");
         return;
     }
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            if let Err(e) = run_websocket_server(save_dir, window, app).await {
+            if let Err(e) = run_websocket_server(window, app).await {
                 eprintln!("WebSocket server error: {}", e);
                 WEBSOCKET_RUNNING.store(false, Ordering::SeqCst);
             }
@@ -267,22 +272,23 @@ pub fn start_websocket_server(save_dir: String, window: Window, app: AppHandle) 
     });
 }
 
-async fn run_websocket_server(save_dir: String, window: Window, app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_websocket_server(window: Window, app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:7878").await?;
     println!("WebSocket server listening on ws://0.0.0.0:7878");
 
     while let Ok((stream, _)) = listener.accept().await {
-        let save_dir = save_dir.clone();
+        // 每次新连接时读取最新的保存目录
+        let save_dir = CURRENT_SAVE_DIR.lock().unwrap().clone();
         let window = window.clone();
         let app = app.clone();
-        
+
         tokio::spawn(async move {
             if let Err(e) = handle_websocket_connection(stream, save_dir, window, app).await {
                 eprintln!("WebSocket connection error: {}", e);
             }
         });
     }
-    
+
     Ok(())
 }
 

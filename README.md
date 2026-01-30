@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="src-tauri/icons/128x128@2x.png" alt="LAN Transfer" width="128" />
+
 # LAN Transfer
 
 **Lightweight cross-platform LAN file transfer app built with Tauri v2**

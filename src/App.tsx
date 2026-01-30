@@ -16,6 +16,25 @@ interface ReceivedFile {
 type Mode = 'select' | 'send' | 'receive';
 type SendStatus = 'idle' | 'sending' | 'success' | 'error';
 
+function formatSaveDir(dir: string): string {
+  if (!dir.startsWith('content://')) return dir;
+  try {
+    const decoded = decodeURIComponent(dir);
+    const treePart = decoded.split('/tree/')[1];
+    if (!treePart) return dir;
+    const colonIndex = treePart.indexOf(':');
+    if (colonIndex === -1) return treePart;
+    const storage = treePart.substring(0, colonIndex);
+    const path = treePart.substring(colonIndex + 1);
+    if (storage === 'primary') {
+      return `内部存储/${path}`;
+    }
+    return `${storage}/${path}`;
+  } catch {
+    return dir;
+  }
+}
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('select');
   const [file, setFile] = useState<File | null>(null);
@@ -480,7 +499,7 @@ export default function App() {
               {saveDir && !editingSaveDir && (
                 <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded-lg">
                   <div className="text-xs text-green-600 mb-1">当前保存位置：</div>
-                  <div className="text-sm text-slate-700 font-mono break-all">{saveDir}</div>
+                  <div className="text-sm text-slate-700 font-mono break-all">{formatSaveDir(saveDir)}</div>
                 </div>
               )}
             </div>

@@ -131,7 +131,9 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
         try {
             val bytes = Base64.decode(args.data_base64, Base64.DEFAULT)
             outputStream.write(bytes)
-            invoke.resolve()
+            val ret = JSObject()
+            ret.put("ok", true)
+            invoke.resolve(ret)
         } catch (e: Exception) {
             invoke.reject("Write error: ${e.message}")
         }
@@ -150,7 +152,9 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
         try {
             outputStream.flush()
             outputStream.close()
-            invoke.resolve()
+            val ret = JSObject()
+            ret.put("ok", true)
+            invoke.resolve(ret)
         } catch (e: Exception) {
             invoke.reject("Close error: ${e.message}")
         }
