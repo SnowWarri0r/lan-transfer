@@ -215,9 +215,50 @@ Rust (android_storage.rs)  ──run_mobile_plugin──>  Kotlin (StoragePlugin
 - Field names in `@InvokeArg` classes must match the Rust serde field names exactly (snake_case)
 - Primitive types like `Long` cannot use `lateinit`; use `var handle: Long = 0` instead
 - Use `invoke.resolve(JSObject)` / `invoke.reject(String)` to return results
+- **`invoke.resolve()` 必须传 JSObject**：不带参数的 `invoke.resolve()` 会返回空 `{}`，如果 Rust 端 `run_mobile_plugin::<T>()` 期望反序列化具体字段（如 `{ ok: bool }`）会失败。即使 Kotlin 端操作已完成，Rust 端也会收到错误。始终构造 `JSObject` 并 `put` 字段后再 `resolve`。
 - Tauri 插件初始化晚于 Activity STARTED，**不能**用 `activity.registerForActivityResult`（会抛 IllegalStateException）
 - 必须用 `(activity as ComponentActivity).activityResultRegistry.register(key, contract, callback)` 代替（不检查 lifecycle 状态）
 - Plugin constructor receives `Activity`, cast to `ComponentActivity` for `activityResultRegistry`
+
+### WebSocket Server Save Directory Hot-Update
+
+WebSocket 服务器启动后保存目录可动态更新，无需重启服务器：
+
+```rust
+// 全局保存目录，每次新连接时读取最新值
+static CURRENT_SAVE_DIR: Mutex<String> = Mutex::new(String::new());
+```
+
+- `start_websocket_server()` 始终更新 `CURRENT_SAVE_DIR`，仅在服务器未运行时启动新服务器
+- 每次新的 WebSocket 连接到来时，从 `CURRENT_SAVE_DIR` 读取最新目录
+- 解决了用户在接收模式下切换保存目录后文件仍存到旧目录的 bug
+
+### Android content:// URI 显示
+
+前端 `formatSaveDir()` 函数将 Android SAF 的 `content://` URI 转换为可读路径：
+- `content://com.android.externalstorage.documents/tree/primary%3ADownload` → `内部存储/Download`
+- 普通文件路径保持原样
+
+## App Icon
+
+- **源文件:** `src-tauri/icons/icon.png` (1024x1024)
+- **生成命令:** `yarn tauri icon src-tauri/icons/icon.png` — 自动生成所有平台所需的尺寸
+- **桌面端窗口图标:** 由 `tauri::generate_context!()` 宏在编译时从 `icons/icon.ico` 自动嵌入，修改后需 `cargo clean` 再构建才能生效
+- **Tauri v2 不支持** `Builder::default_window_icon()` 或 `tauri.conf.json` 中 `windows[].icon` 字段
+
+## CI/CD
+
+- **配置文件:** `.github/workflows/release.yml`
+- **触发条件:** 推送 `v*` 格式的 git tag（如 `v0.1.0`）
+- **构建产物:** Windows 桌面安装包 + Android 通用 APK
+- **发布方式:** 自动发布到 GitHub Releases（非草稿）
+- **重新发布同版本:** 删除旧 tag 后在新 commit 上重建，推送触发 CI：
+  ```bash
+  git tag -d v0.1.0
+  git push origin :refs/tags/v0.1.0
+  git tag v0.1.0
+  git push origin v0.1.0
+  ```
 
 ## Important Notes
 
