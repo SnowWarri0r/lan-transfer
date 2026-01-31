@@ -31,6 +31,10 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Rust targets for macOS universal binary
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
       - name: Install frontend dependencies
         run: yarn install
 
