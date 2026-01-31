@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface Device {
   ip: string;
@@ -13,7 +13,14 @@ interface ReceivedFile {
   size: number;
 }
 
-type Mode = 'select' | 'send' | 'receive';
+interface ChatMessage {
+  content: string;
+  from_ip: string;
+  timestamp: number;
+  is_me?: boolean;
+}
+
+type Mode = 'select' | 'send' | 'receive' | 'chat';
 type SendStatus = 'idle' | 'sending' | 'success' | 'error';
 
 function formatSaveDir(dir: string): string {
@@ -50,6 +57,18 @@ export default function App() {
   const [sendingTo, setSendingTo] = useState<string>('');
   const [receivedFiles, setReceivedFiles] = useState<ReceivedFile[]>([]);
   const [receivingFile, setReceivingFile] = useState<string | null>(null);
+
+  // 聊天模式状态
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState<string>('');
+  const [activeChatIp, setActiveChatIp] = useState<string | null>(null);
+  const [chatConnected, setChatConnected] = useState<boolean>(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [selectedMessageIndex, setSelectedMessageIndex] = useState<number | null>(null);
+  const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatConnectedRef = useRef<boolean>(false);
+  const activeChatIpRef = useRef<string | null>(null);
 
   // 检测是否为 Android 平台
   const [isAndroid, setIsAndroid] = useState<boolean>(false);
@@ -106,8 +125,83 @@ export default function App() {
         .catch(() => {
           console.log('无法获取默认下载目录');
         });
+    } else if (mode === 'chat') {
+      invoke('start_chat_server');
     }
   }, [mode]);
+
+  // 聊天事件监听
+  useEffect(() => {
+    const unlistenMessage = listen<ChatMessage>('chat-message-received', (event) => {
+      const msg = event.payload;
+      setChatMessages(prev => [...prev, { ...msg, is_me: false }]);
+    });
+
+    const unlistenConnected = listen<string>('chat-connected', (event) => {
+      const peerIp = event.payload;
+
+      // 情况1：如果对方是当前聊天对象
+      if (peerIp === activeChatIpRef.current) {
+        // 如果当前未连接，说明对方重新连接了，我们也需要重新连接以建立双向通道
+        if (!chatConnectedRef.current) {
+          // 延迟一点以确保对方服务器已准备好
+          setTimeout(async () => {
+            try {
+              await invoke('connect_to_chat', { targetIp: peerIp });
+            } catch (err) {
+              console.error('Failed to reconnect:', err);
+            }
+          }, 300);
+        }
+        setChatConnected(true);
+        chatConnectedRef.current = true;
+        setChatError(null);
+      }
+      // 情况2：如果我们还在设备选择界面，对方主动连接了我们
+      else if (!activeChatIpRef.current) {
+        // 自动接受连接，进入聊天界面并建立反向连接
+        setActiveChatIp(peerIp);
+        activeChatIpRef.current = peerIp;
+        setChatMessages([]);
+        // 延迟一点以确保对方服务器已准备好
+        setTimeout(async () => {
+          try {
+            await invoke('connect_to_chat', { targetIp: peerIp });
+          } catch (err) {
+            console.error('Failed to establish reverse connection:', err);
+          }
+        }, 300);
+        setChatConnected(true);
+        chatConnectedRef.current = true;
+        setChatError(null);
+      }
+    });
+
+    const unlistenDisconnected = listen<string>('chat-disconnected', (event) => {
+      const peerIp = event.payload;
+      if (peerIp === activeChatIpRef.current) {
+        setChatConnected(false);
+        chatConnectedRef.current = false;
+        setChatError('连接已断开');
+      }
+    });
+
+    const unlistenError = listen<string>('chat-server-error', (event) => {
+      setChatError(event.payload);
+    });
+
+    return () => {
+      unlistenMessage.then(fn => fn());
+      unlistenConnected.then(fn => fn());
+      unlistenDisconnected.then(fn => fn());
+      unlistenError.then(fn => fn());
+    };
+  }, []);
+
+  // 自动滚动到最新消息
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   const handlePickFolder = async () => {
     try {
@@ -222,6 +316,92 @@ export default function App() {
     setSendStatus('idle');
   };
 
+  // 聊天处理函数
+  const handleStartChat = async (device: Device) => {
+    setChatError(null);
+    try {
+      await invoke('connect_to_chat', { targetIp: device.ip });
+      setActiveChatIp(device.ip);
+      activeChatIpRef.current = device.ip;
+      setChatMessages([]);
+      setChatConnected(true);
+      chatConnectedRef.current = true;
+      setChatError(null);
+    } catch (err) {
+      setChatError('连接失败: ' + err);
+      setActiveChatIp(null);
+      activeChatIpRef.current = null;
+    }
+  };
+
+  const handleSendChatMessage = async () => {
+    if (!chatInput.trim() || !activeChatIp) return;
+
+    try {
+      await invoke('send_chat_message', { targetIp: activeChatIp, content: chatInput });
+
+      const timestamp = Date.now();
+      setChatMessages(prev => [...prev, {
+        content: chatInput,
+        from_ip: localIp,
+        timestamp,
+        is_me: true
+      }]);
+
+      setChatInput('');
+    } catch (err) {
+      alert('发送失败: ' + err);
+    }
+  };
+
+  const handleDisconnectChat = async () => {
+    if (activeChatIp) {
+      try {
+        await invoke('disconnect_chat', { targetIp: activeChatIp });
+      } catch (err) {
+        console.error('断开连接失败:', err);
+      }
+    }
+    setActiveChatIp(null);
+    activeChatIpRef.current = null;
+    setChatMessages([]);
+    setChatConnected(false);
+    chatConnectedRef.current = false;
+  };
+
+  const handleLeaveChatMode = async () => {
+    try {
+      await invoke('disconnect_all_chats');
+      await invoke('stop_chat_server');
+    } catch (err) {
+      console.error('停止聊天服务失败:', err);
+    }
+    setActiveChatIp(null);
+    activeChatIpRef.current = null;
+    setChatMessages([]);
+    setChatConnected(false);
+    chatConnectedRef.current = false;
+  };
+
+  const formatTime = (timestamp: number) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const handleCopyMessage = async (content: string, index: number) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedMessageIndex(index);
+      // 短暂显示"已复制"后自动隐藏
+      setTimeout(() => {
+        setCopiedMessageIndex(null);
+        setSelectedMessageIndex(null);
+      }, 1500);
+    } catch (err) {
+      console.error('复制失败:', err);
+    }
+  };
+
   // 模式选择界面
   if (mode === 'select') {
     return (
@@ -248,6 +428,14 @@ export default function App() {
               <div className="text-xl font-semibold text-green-600 group-hover:text-green-700">接收模式</div>
               <div className="text-sm text-slate-500 mt-1">监听端口接收其他设备的文件</div>
             </button>
+
+            <button
+              onClick={() => setMode('chat')}
+              className="w-full p-6 bg-white border-2 border-slate-200 rounded-xl hover:border-purple-400 hover:shadow-lg transition-all group"
+            >
+              <div className="text-xl font-semibold text-purple-600 group-hover:text-purple-700">聊天模式</div>
+              <div className="text-sm text-slate-500 mt-1">与其他设备实时文字聊天</div>
+            </button>
           </div>
         </div>
       </div>
@@ -260,10 +448,15 @@ export default function App() {
         {/* 顶部导航 */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-slate-800">
-            {mode === 'send' ? '发送文件' : '接收文件'}
+            {mode === 'send' ? '发送文件' : mode === 'receive' ? '接收文件' : '聊天'}
           </h1>
           <button
-            onClick={() => setMode('select')}
+            onClick={async () => {
+              if (mode === 'chat') {
+                await handleLeaveChatMode();
+              }
+              setMode('select');
+            }}
             className="px-4 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition"
           >
             切换模式
@@ -271,18 +464,20 @@ export default function App() {
         </div>
 
         {/* 本机信息 */}
-        <div className={`p-4 rounded-xl ${mode === 'send' ? 'bg-blue-50 border border-blue-100' : 'bg-green-50 border border-green-100'}`}>
-          <p className="text-sm font-medium text-slate-600">本机 IP 地址</p>
-          <p className={`text-xl font-mono font-semibold ${mode === 'send' ? 'text-blue-600' : 'text-green-600'}`}>
-            {localIp}
-          </p>
-          {mode === 'receive' && isReceiving && (
-            <p className="text-sm text-green-600 mt-1 flex items-center gap-1">
-              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-              正在监听端口 7878
+        {mode !== 'chat' && (
+          <div className={`p-4 rounded-xl ${mode === 'send' ? 'bg-blue-50 border border-blue-100' : 'bg-green-50 border border-green-100'}`}>
+            <p className="text-sm font-medium text-slate-600">本机 IP 地址</p>
+            <p className={`text-xl font-mono font-semibold ${mode === 'send' ? 'text-blue-600' : 'text-green-600'}`}>
+              {localIp}
             </p>
-          )}
-        </div>
+            {mode === 'receive' && isReceiving && (
+              <p className="text-sm text-green-600 mt-1 flex items-center gap-1">
+                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                正在监听端口 7878
+              </p>
+            )}
+          </div>
+        )}
 
         {/* 发送模式 */}
         {mode === 'send' && (
@@ -553,6 +748,210 @@ export default function App() {
                       {device.hostname} <span className="font-mono text-slate-400">({device.ip})</span>
                     </div>
                   ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 聊天模式 */}
+        {mode === 'chat' && (
+          <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            {!activeChatIp ? (
+              /* 设备选择界面 */
+              <div className="p-5 space-y-4">
+                <div className="p-4 bg-purple-50 border border-purple-100 rounded-xl">
+                  <p className="text-sm font-medium text-slate-600">本机 IP 地址</p>
+                  <p className="text-xl font-mono font-semibold text-purple-600">{localIp}</p>
+                  <p className="text-sm text-purple-600 mt-1 flex items-center gap-1">
+                    <span className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></span>
+                    聊天服务器已启动（端口 7879）
+                  </p>
+                </div>
+
+                {/* 错误提示 */}
+                {chatError && (
+                  <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+                    <span className="text-red-700">{chatError}</span>
+                    <button
+                      onClick={() => setChatError(null)}
+                      className="text-red-600 hover:text-red-800 text-xl font-bold"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    选择聊天对象 <span className="text-slate-400">({devices.length})</span>
+                  </label>
+                  {devices.length > 0 ? (
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {devices.map((device) => (
+                        <div
+                          key={device.ip}
+                          className="flex items-center justify-between p-4 border-2 border-slate-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition cursor-pointer"
+                          onClick={() => handleStartChat(device)}
+                        >
+                          <div>
+                            <p className="font-medium text-slate-800">{device.hostname}</p>
+                            <p className="text-sm text-slate-500 font-mono">{device.ip}</p>
+                          </div>
+                          <button
+                            className="px-4 py-2 text-sm font-medium bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition"
+                          >
+                            开始聊天
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-12 text-slate-400">
+                      <div className="animate-pulse">正在搜索设备...</div>
+                      <div className="text-sm mt-2">确保对方设备也在聊天模式</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* 聊天界面 */
+              <div className="flex flex-col h-[600px]">
+                {/* 聊天头部 */}
+                <div className="p-4 border-b border-slate-200 bg-purple-50 flex items-center justify-between">
+                  <div>
+                    <p className="font-medium text-slate-800">
+                      {devices.find(d => d.ip === activeChatIp)?.hostname || '未知设备'}
+                    </p>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="font-mono text-slate-500">{activeChatIp}</span>
+                      {chatConnected && (
+                        <span className="flex items-center gap-1 text-green-600">
+                          <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                          已连接
+                        </span>
+                      )}
+                      {!chatConnected && (
+                        <span className="flex items-center gap-1 text-red-600">
+                          <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                          未连接
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleDisconnectChat}
+                    className="px-4 py-2 text-sm font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
+                  >
+                    断开
+                  </button>
+                </div>
+
+                {/* 错误提示 */}
+                {chatError && (
+                  <div className="px-4 py-3 bg-red-50 border-b border-red-200 flex items-center justify-between">
+                    <span className="text-sm text-red-700">{chatError}</span>
+                    <button
+                      onClick={() => setChatError(null)}
+                      className="text-red-600 hover:text-red-800 text-lg font-bold"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                )}
+
+                {/* 消息区域 */}
+                <div
+                  className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50"
+                  onClick={() => setSelectedMessageIndex(null)}
+                >
+                  {chatMessages.length === 0 ? (
+                    <div className="text-center text-slate-400 py-12">
+                      还没有消息，开始聊天吧
+                    </div>
+                  ) : (
+                    <>
+                      {chatMessages.map((msg, idx) => (
+                        <div
+                          key={idx}
+                          className={`flex ${msg.is_me ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div className={`max-w-[70%] ${msg.is_me ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
+                            <div
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedMessageIndex(idx);
+                              }}
+                              className={`px-4 py-2 rounded-lg cursor-pointer transition ${
+                                msg.is_me
+                                  ? 'bg-purple-500 text-white rounded-br-none hover:bg-purple-600'
+                                  : 'bg-white border border-slate-200 text-slate-800 rounded-bl-none hover:bg-slate-50'
+                              }`}
+                            >
+                              <p className="break-words">{msg.content}</p>
+                            </div>
+                            <div className={`flex items-center gap-2 px-1 ${msg.is_me ? 'flex-row-reverse' : 'flex-row'}`}>
+                              <p className="text-xs text-slate-400">
+                                {formatTime(msg.timestamp)}
+                              </p>
+                              {selectedMessageIndex === idx && (
+                                copiedMessageIndex === idx ? (
+                                  <span className="text-xs text-green-600 flex items-center gap-0.5">
+                                    <span>✓</span>
+                                    <span>已复制</span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCopyMessage(msg.content, idx);
+                                    }}
+                                    className="text-xs text-slate-500 hover:text-slate-700 transition flex items-center gap-0.5"
+                                    title="复制消息"
+                                  >
+                                    <span>📋</span>
+                                  </button>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <div ref={messagesEndRef} />
+                    </>
+                  )}
+                </div>
+
+                {/* 输入区域 */}
+                <div className="p-4 border-t border-slate-200 bg-white">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendChatMessage();
+                        }
+                      }}
+                      placeholder={chatConnected ? "输入消息..." : "未连接"}
+                      disabled={!chatConnected}
+                      className="flex-1 min-w-0 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-100 disabled:text-slate-400"
+                    />
+                    <button
+                      onClick={handleSendChatMessage}
+                      disabled={!chatInput.trim() || !chatConnected}
+                      className={`px-4 py-2 font-medium rounded-lg transition whitespace-nowrap shrink-0 ${
+                        chatInput.trim() && chatConnected
+                          ? 'bg-purple-500 text-white hover:bg-purple-600'
+                          : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                      }`}
+                    >
+                      发送
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-2">按 Enter 发送消息</p>
                 </div>
               </div>
             )}
