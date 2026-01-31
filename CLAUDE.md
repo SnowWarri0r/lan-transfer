@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Tauri v2 application for LAN file transfer with a React + TypeScript frontend and Rust backend. The app allows users to send and receive files over a local network using UDP broadcast discovery and WebSocket file transfer.
+This is a Tauri v2 application for LAN file transfer and real-time chat with a React + TypeScript frontend and Rust backend. The app allows users to send and receive files over a local network using UDP multicast discovery and WebSocket transfer, plus bidirectional text messaging via WebSocket chat.
 
 ## Development Commands
 
@@ -73,18 +73,25 @@ listen<Device[]>('devices-updated', (event) => {
 ### Key Components
 
 **Frontend (`src/`)**
-- `App.tsx` - Main UI with mode selection (send/receive), device list, file transfer
+- `App.tsx` - Main UI with mode selection (send/receive/chat), device list, file transfer, chat interface
 - `index.css` - Tailwind CSS 4 entry point
-- Uses browser's native WebSocket API for sending files
+- Uses browser's native WebSocket API for sending files (file transfer mode)
 
 **Backend (`src-tauri/src/`)**
 - `main.rs` / `lib.rs` - Entry point, registers Tauri commands and plugins
-- `network/transfer.rs` - All network logic:
+- `network/transfer.rs` - File transfer network logic:
   - `start_discovery()` - UDP multicast device discovery
   - `start_websocket_server()` - File receiving server (supports both file path and SAF content:// URI)
   - `get_local_ip()` - Get local network IP
   - `get_download_dir()` - Get system download directory
   - `select_folder()` - Native folder picker dialog (desktop: tauri-plugin-dialog, Android: SAF)
+- `network/chat.rs` - Chat network logic:
+  - `start_chat_server()` - WebSocket chat server (dual server/client architecture)
+  - `connect_to_chat()` - Connect to remote chat server
+  - `send_chat_message()` - Send text message to connected peer
+  - `disconnect_chat()` - Close chat connection
+  - `stop_chat_server()` - Stop chat server
+  - `disconnect_all_chats()` - Close all active connections
 - `android_storage.rs` - Android Storage Access Framework (SAF) plugin bridge:
   - Rust-side plugin that communicates with Kotlin `StoragePlugin` via `run_mobile_plugin`
   - Methods: `pick_folder()`, `open_writer()`, `write_chunk()`, `close_writer()`
@@ -154,12 +161,134 @@ socket.onopen = () => {
 // On Close: emit "file-received" event
 ```
 
+## Chat (WebSocket Bidirectional Messaging)
+
+### Protocol
+- **Port:** 7879 (TCP/WebSocket)
+- **Architecture:** Dual server/client pattern (each device runs both)
+- **Message Format:** JSON-encoded `ChatMessage`
+```json
+{
+  "content": "Hello",
+  "from_ip": "192.168.1.10",
+  "timestamp": 1706745600000
+}
+```
+
+### Dual Server/Client Pattern
+Every device in chat mode runs both:
+1. **WebSocket Server** on port 7879 - accepts incoming connections
+2. **WebSocket Client** - initiates outgoing connections to peers
+
+This enables:
+- Auto-accept: Device B's server accepts when A connects
+- Auto-reconnect: If connection drops, either side can reconnect to the other's server
+- Symmetric architecture: No dedicated "host" device
+
+### Key Implementation Details
+
+**Connection Management:**
+```rust
+pub struct ChatConnection {
+    pub ip: String,
+    pub writer: Arc<Mutex<WsWriter>>,
+}
+
+pub(crate) enum WsWriter {
+    Plain(futures_util::stream::SplitSink<WebSocketStream<tokio::net::TcpStream>, Message>),
+    Tls(futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>, Message>),
+}
+
+pub type ChatConnections = Arc<Mutex<HashMap<String, ChatConnection>>>;
+```
+
+- Global `ChatConnections` state managed via Tauri `.manage()`
+- Each connection stored by peer IP as key
+- `WsWriter` enum handles both server-accepted (Plain) and client-initiated (Tls) streams
+- Writer stored in `Arc<Mutex<>>` for concurrent access from message sender
+
+**Localhost Normalization:**
+When testing on same machine, peer IP shows as `127.0.0.1`. The server normalizes this to the actual local IP to ensure proper connection tracking:
+
+```rust
+let mut peer_ip = peer_addr.ip().to_string();
+if peer_ip == "127.0.0.1" || peer_ip == "::1" {
+    if let Ok(local_ip) = crate::network::transfer::get_local_ip() {
+        peer_ip = local_ip;
+    }
+}
+```
+
+**WebSocket Message Handling:**
+- Text messages: Parsed as `ChatMessage`, emitted to frontend
+- Ping/Pong: Automatically responded to maintain connection
+- Close: Gracefully removes connection from HashMap
+- Connection reset/Broken pipe errors: Filtered from logs (expected during disconnect)
+
+**Auto-Reconnect (Frontend):**
+Uses `useRef` to avoid closure staleness in event listeners:
+
+```typescript
+const chatConnectedRef = useRef<boolean>(false);
+const activeChatIpRef = useRef<string | null>(null);
+
+const unlistenDisconnected = listen<string>('chat-disconnected', (event) => {
+  const peerIp = event.payload;
+  if (peerIp === activeChatIpRef.current) {
+    setChatConnected(false);
+    chatConnectedRef.current = false;
+  }
+});
+
+const unlistenConnected = listen<string>('chat-connected', (event) => {
+  const peerIp = event.payload;
+  if (peerIp === activeChatIpRef.current && !chatConnectedRef.current) {
+    // Reconnected to current peer
+    setTimeout(async () => {
+      await invoke('connect_to_chat', { targetIp: peerIp });
+    }, 300);
+    setChatConnected(true);
+    chatConnectedRef.current = true;
+  }
+});
+```
+
+Key insight: Event listeners cannot depend on state variables (they capture stale closures). Use `useRef` and check `.current` value inside listener.
+
+**Auto-Accept (Frontend):**
+```typescript
+if (!activeChatIpRef.current) {
+  // Not in a chat session, auto-accept incoming connection
+  setActiveChatIp(peerIp);
+  activeChatIpRef.current = peerIp;
+  setTimeout(async () => {
+    await invoke('connect_to_chat', { targetIp: peerIp });
+  }, 300);
+}
+```
+
+### Flow Example
+1. User A enters Chat mode → `start_chat_server()` starts server on 7879
+2. User A clicks Device B → `connect_to_chat(B_IP)` creates client connection
+3. Device B's server accepts connection → emits `chat-connected` event
+4. Device B auto-accepts → calls `connect_to_chat(A_IP)` back to A's server
+5. Both sides now have bidirectional connections in `ChatConnections` HashMap
+6. Either side sends messages via `send_chat_message()` → writes to stored `WsWriter`
+7. If connection drops → `chat-disconnected` event → auto-reconnect via `chat-connected` listener
+
+### Limitations (MVP)
+- **Single session:** Can only chat with one device at a time
+- **No persistence:** Messages stored in React state, cleared on refresh
+- **No typing indicators:** Future enhancement
+- **Android background:** Chat server stops when app backgrounded (Tauri limitation)
+
 ## Network Ports
 
 | Port  | Protocol | Purpose |
 |-------|----------|---------|
-| 37821 | UDP      | Device discovery broadcast |
+| 37821 | UDP      | Device discovery (multicast) |
 | 7878  | TCP/WS   | File transfer |
+| 7879  | TCP/WS   | Chat (bidirectional messaging) |
 | 1420  | TCP      | Vite dev server |
 | 1421  | TCP      | Vite HMR |
 
@@ -167,12 +296,14 @@ socket.onopen = () => {
 
 ### Rust (`src-tauri/Cargo.toml`)
 - `tokio` - Async runtime
-- `tokio-tungstenite` - WebSocket server
+- `tokio-tungstenite` - WebSocket server (file transfer + chat)
+- `futures-util` - Stream utilities (WebSocket split for chat)
 - `socket2` - Low-level socket control (SO_REUSEADDR, multicast)
 - `hostname` - Get device hostname (desktop only, not available on Android)
 - `dirs` - Cross-platform directories
 - `tauri-plugin-dialog` - Native file dialogs (desktop folder picker)
 - `base64` - Base64 encoding for SAF write chunks (Android only)
+- `serde` / `serde_json` - Serialization for ChatMessage protocol
 
 ### Frontend (`package.json`)
 - `@tauri-apps/api` - Tauri IPC
@@ -181,9 +312,10 @@ socket.onopen = () => {
 
 ## Application Modes
 
-1. **Select Mode** - Choose between send/receive
+1. **Select Mode** - Choose between send/receive/chat
 2. **Send Mode** - Select file, discover devices, send to target
 3. **Receive Mode** - Start WebSocket server, wait for incoming files
+4. **Chat Mode** - Real-time text messaging with auto-accept and auto-reconnect
 
 ## Android Storage Access Framework (SAF)
 
@@ -260,13 +392,59 @@ static CURRENT_SAVE_DIR: Mutex<String> = Mutex::new(String::new());
   git push origin v0.1.0
   ```
 
+## Testing
+
+### Chat Feature Testing
+
+**Basic Flow:**
+1. Start two app instances (can be on same machine or different devices)
+2. Both enter Chat mode
+3. Device A clicks on Device B in device list
+4. Verify both sides show "已连接" (Connected) status
+5. Send messages from both sides, verify real-time delivery
+6. Verify message bubbles show correct alignment (own messages right, peer left)
+7. Click disconnect, verify both return to device selection screen
+
+**Auto-Reconnect:**
+1. Establish chat connection
+2. Kill one app instance
+3. Restart killed instance, enter Chat mode
+4. Verify connection automatically restores within 300ms
+5. Send messages to confirm bidirectional communication restored
+
+**Auto-Accept:**
+1. Device A in Chat mode (not connected to anyone)
+2. Device B enters Chat mode, clicks on Device A
+3. Verify Device A automatically enters chat session with B (no manual accept needed)
+4. Verify connection is bidirectional
+
+**Same-Machine Testing:**
+- Run multiple instances on localhost
+- Verify `127.0.0.1` is normalized to actual local IP
+- Verify messages route correctly between instances
+
+**Edge Cases:**
+- Send empty message → input button should be disabled
+- Send very long message → verify text wraps in bubble
+- Send emoji and special characters → verify correct rendering
+- Rapid message sending → verify order preserved
+- Click copy button → verify "✓ 已复制" feedback shows for 1.5s
+
+**Cross-Platform:**
+- Desktop ↔ Desktop
+- Desktop ↔ Android
+- Android ↔ Android
+
 ## Important Notes
 
-- WebSocket server only starts in Receive mode (prevents port conflict)
+- WebSocket servers only start in Receive/Chat modes (prevents port conflicts)
+- Chat server (7879) and file transfer server (7878) can run simultaneously
 - UDP discovery uses multicast (239.255.77.88) instead of broadcast for Android compatibility
 - Multiple instances on same machine work via `instance_id` differentiation
-- Uses `SO_REUSEADDR` for UDP to allow multiple processes on same port
+- Uses `SO_REUSEADDR` for UDP and chat WebSocket to allow multiple processes on same port
 - File transfer uses browser WebSocket (frontend), not Rust (simpler, works cross-platform)
+- Chat uses Rust WebSocket server for bidirectional communication (tokio-tungstenite)
 - Android file writing uses SAF (content:// URIs) via base64-encoded chunks through the plugin bridge
 - Android requires `MulticastLock` for UDP multicast (acquired in `MainActivity.kt`)
 - Desktop warnings about unused Android-specific code are expected and harmless
+- Chat messages are not persisted - cleared on app close/refresh

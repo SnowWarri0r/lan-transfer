@@ -24,12 +24,15 @@ Select a file, pick a device, and send — no cloud, no account, no internet req
 
 - **Cross-Platform** — Windows, macOS, Linux desktop + Android
 - **Auto Discovery** — Devices find each other automatically via UDP multicast
+- **Real-Time Chat** — Text messaging between devices with auto-reconnect
 - **No Setup** — No server, no registration, just open and go
 - **Large File Support** — Streaming transfer with backpressure, handles files of any size
 - **Android SAF** — Full Storage Access Framework support for modern Android scoped storage
 - **Lightweight** — Small binary, minimal resource usage
 
 ## How It Works
+
+### File Transfer
 
 ```
 ┌──────────────┐  UDP Multicast   ┌──────────────┐
@@ -46,11 +49,26 @@ Select a file, pick a device, and send — no cloud, no account, no internet req
 4. Sender picks a discovered device (or enters IP manually)
 5. File transfers directly over WebSocket
 
+### Chat
+
+```
+┌──────────────┐  Bidirectional   ┌──────────────┐
+│   Device A   │  WebSocket Chat  │   Device B   │
+│              │◄────────────────►│              │
+│  Chat Server │   ws://ip:7879   │  Chat Server │
+└──────────────┘                  └──────────────┘
+```
+
+1. Enter **Chat Mode** on both devices
+2. Pick a device to chat with (or auto-accept incoming connection)
+3. Send messages in real-time with auto-reconnect
+4. Each device runs both server and client for bidirectional communication
+
 ## Screenshots
 
-| Select Mode | Send Mode | Receive Mode |
-|:-----------:|:---------:|:------------:|
-| Choose role | Pick device & send | Wait for files |
+| Select Mode | Send Mode | Receive Mode | Chat Mode |
+|:-----------:|:---------:|:------------:|:---------:|
+| Choose role | Pick device & send | Wait for files | Real-time messaging |
 
 ## Getting Started
 
@@ -103,13 +121,14 @@ yarn tauri android build
 
 ```
 src/
-  App.tsx              # React UI — mode selection, device list, file transfer
+  App.tsx              # React UI — mode selection, device list, file transfer, chat
 
 src-tauri/src/
   lib.rs               # Entry point, plugin & command registration
   android_storage.rs   # Rust ↔ Kotlin plugin bridge for Android SAF
   network/
     transfer.rs        # Discovery, WebSocket server, file I/O
+    chat.rs            # Bidirectional WebSocket chat (dual server/client)
 
 src-tauri/gen/android/.../
   app/tauri/storage/
@@ -124,6 +143,7 @@ src-tauri/gen/android/.../
 |-------|----------|---------|
 | 37821 | UDP      | Device discovery (multicast 239.255.77.88) |
 | 7878  | TCP/WS   | File transfer |
+| 7879  | TCP/WS   | Chat (bidirectional messaging) |
 
 ## Contributing
 
