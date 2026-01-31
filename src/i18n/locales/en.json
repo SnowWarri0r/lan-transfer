@@ -1,0 +1,86 @@
+{
+  "common": {
+    "localIp": "Local IP",
+    "loading": "Loading...",
+    "send": "Send",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "disconnect": "Disconnect",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "copied": "Copied"
+  },
+  "mode": {
+    "title": "LAN File Transfer",
+    "send": "Send Mode",
+    "sendDesc": "Select files to send to other devices",
+    "receive": "Receive Mode",
+    "receiveDesc": "Listen for files from other devices",
+    "chat": "Chat Mode",
+    "chatDesc": "Real-time text chat with other devices",
+    "switchMode": "Switch Mode"
+  },
+  "send": {
+    "title": "Send File",
+    "selectFile": "Select File",
+    "selected": "Selected: ",
+    "devices": "LAN Devices",
+    "manualIp": "Or Enter IP Manually",
+    "ipPlaceholder": "e.g. 192.168.1.100",
+    "sending": "Sending...",
+    "sendingTo": "Sending to ",
+    "success": "Sent Successfully!",
+    "failed": "Send failed, please check if the recipient is online",
+    "selectFileFirst": "Please select a file first",
+    "enterIp": "Please enter target IP address"
+  },
+  "receive": {
+    "title": "Receive File",
+    "saveDir": "Save Directory",
+    "selectFolder": "Select Folder",
+    "manualInput": "Manual Input",
+    "listening": "Listening on port 7878",
+    "waiting": "Waiting for files...",
+    "instruction": "Other devices can send files to ",
+    "receiving": "Receiving: ",
+    "receivedFiles": "Received Files",
+    "discoveredDevices": "Discovered Devices",
+    "startup": "Starting receiving service...",
+    "currentPath": "Current save path: ",
+    "android": {
+      "selectLocation": "Select Save Location:",
+      "picker": "📂 Select Folder",
+      "pickerDesc": "System File Picker",
+      "downloads": "📥 Downloads",
+      "downloadsPath": "/storage/.../Download",
+      "documents": "📄 Documents",
+      "documentsPath": "/storage/.../Documents",
+      "custom": "✏️ Custom",
+      "customDesc": "Enter Path",
+      "customPlaceholder": "/storage/emulated/0/Download",
+      "internalStorage": "Internal Storage/"
+    }
+  },
+  "chat": {
+    "title": "Chat",
+    "serverStarted": "Chat server started (port 7879)",
+    "selectPeer": "Select Chat Peer",
+    "startChat": "Start Chat",
+    "searching": "Searching for devices...",
+    "hint": "Make sure the other device is also in chat mode",
+    "unknownDevice": "Unknown Device",
+    "emptyMessage": "No messages yet, start chatting",
+    "inputPlaceholder": "Type a message...",
+    "inputHint": "Press Enter to send",
+    "connectionLost": "Connection lost",
+    "connectionFailed": "Connection failed: ",
+    "sendFailed": "Send failed: "
+  },
+  "error": {
+    "fetchIpFailed": "Fetch failed: ",
+    "downloadDirFailed": "Failed to get default download directory",
+    "disconnectFailed": "Disconnect failed:",
+    "stopChatFailed": "Stop chat server failed:",
+    "copyFailed": "Copy failed:"
+  }
+}

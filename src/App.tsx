@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useState, useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface Device {
   ip: string;
@@ -23,7 +24,7 @@ interface ChatMessage {
 type Mode = 'select' | 'send' | 'receive' | 'chat';
 type SendStatus = 'idle' | 'sending' | 'success' | 'error';
 
-function formatSaveDir(dir: string): string {
+function formatSaveDir(dir: string, t: (key: string) => string): string {
   if (!dir.startsWith('content://')) return dir;
   try {
     const decoded = decodeURIComponent(dir);
@@ -34,7 +35,7 @@ function formatSaveDir(dir: string): string {
     const storage = treePart.substring(0, colonIndex);
     const path = treePart.substring(colonIndex + 1);
     if (storage === 'primary') {
-      return `内部存储/${path}`;
+      return `${t('receive.android.internalStorage')}${path}`;
     }
     return `${storage}/${path}`;
   } catch {
@@ -43,13 +44,14 @@ function formatSaveDir(dir: string): string {
 }
 
 export default function App() {
+  const { t, i18n } = useTranslation();
   const [mode, setMode] = useState<Mode>('select');
   const [file, setFile] = useState<File | null>(null);
   const [saveDir, setSaveDir] = useState<string | null>(null);
   const [editingSaveDir, setEditingSaveDir] = useState<boolean>(false);
   const [saveDirInput, setSaveDirInput] = useState<string>('');
   const [targetIp, setTargetIp] = useState<string>('');
-  const [localIp, setLocalIp] = useState<string>('获取中...');
+  const [localIp, setLocalIp] = useState<string>(t('common.loading'));
   const [isReceiving, setIsReceiving] = useState<boolean>(false);
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
@@ -90,7 +92,7 @@ export default function App() {
   useEffect(() => {
     invoke<string>('get_local_ip')
       .then(ip => setLocalIp(ip))
-      .catch(err => setLocalIp('获取失败: ' + err));
+      .catch(err => setLocalIp(t('error.fetchIpFailed') + err));
 
     invoke('start_discovery');
 
@@ -123,7 +125,7 @@ export default function App() {
           setIsReceiving(true);
         })
         .catch(() => {
-          console.log('无法获取默认下载目录');
+          console.log(t('error.downloadDirFailed'));
         });
     } else if (mode === 'chat') {
       invoke('start_chat_server');
@@ -182,7 +184,7 @@ export default function App() {
       if (peerIp === activeChatIpRef.current) {
         setChatConnected(false);
         chatConnectedRef.current = false;
-        setChatError('连接已断开');
+        setChatError(t('chat.connectionLost'));
       }
     });
 
@@ -239,7 +241,7 @@ export default function App() {
 
   const handleSendToDevice = async (device: Device) => {
     if (!file) {
-      alert("请先选择文件");
+      alert(t('send.selectFileFirst'));
       return;
     }
     setSelectedDevice(device);
@@ -248,11 +250,11 @@ export default function App() {
 
   const handleSendManual = async () => {
     if (!file) {
-      alert("请先选择文件");
+      alert(t('send.selectFileFirst'));
       return;
     }
     if (!targetIp) {
-      alert("请输入目标IP地址");
+      alert(t('send.enterIp'));
       return;
     }
     await sendFile(targetIp);
@@ -328,7 +330,7 @@ export default function App() {
       chatConnectedRef.current = true;
       setChatError(null);
     } catch (err) {
-      setChatError('连接失败: ' + err);
+      setChatError(t('chat.connectionFailed') + err);
       setActiveChatIp(null);
       activeChatIpRef.current = null;
     }
@@ -350,7 +352,7 @@ export default function App() {
 
       setChatInput('');
     } catch (err) {
-      alert('发送失败: ' + err);
+      alert(t('chat.sendFailed') + err);
     }
   };
 
@@ -359,7 +361,7 @@ export default function App() {
       try {
         await invoke('disconnect_chat', { targetIp: activeChatIp });
       } catch (err) {
-        console.error('断开连接失败:', err);
+        console.error(t('error.disconnectFailed'), err);
       }
     }
     setActiveChatIp(null);
@@ -374,7 +376,7 @@ export default function App() {
       await invoke('disconnect_all_chats');
       await invoke('stop_chat_server');
     } catch (err) {
-      console.error('停止聊天服务失败:', err);
+      console.error(t('error.stopChatFailed'), err);
     }
     setActiveChatIp(null);
     activeChatIpRef.current = null;
@@ -398,7 +400,7 @@ export default function App() {
         setSelectedMessageIndex(null);
       }, 1500);
     } catch (err) {
-      console.error('复制失败:', err);
+      console.error(t('error.copyFailed'), err);
     }
   };
 
@@ -408,8 +410,8 @@ export default function App() {
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-6">
         <div className="w-full max-w-md space-y-6">
           <div className="text-center">
-            <h1 className="text-3xl font-bold text-slate-800">局域网文件传输</h1>
-            <p className="mt-2 text-slate-500">本机 IP: <span className="font-mono text-slate-700">{localIp}</span></p>
+            <h1 className="text-3xl font-bold text-slate-800">{t('mode.title')}</h1>
+            <p className="mt-2 text-slate-500">{t('common.localIp')}: <span className="font-mono text-slate-700">{localIp}</span></p>
           </div>
 
           <div className="space-y-4">
@@ -417,24 +419,33 @@ export default function App() {
               onClick={() => setMode('send')}
               className="w-full p-6 bg-white border-2 border-slate-200 rounded-xl hover:border-blue-400 hover:shadow-lg transition-all group"
             >
-              <div className="text-xl font-semibold text-blue-600 group-hover:text-blue-700">发送模式</div>
-              <div className="text-sm text-slate-500 mt-1">选择文件发送给其他设备</div>
+              <div className="text-xl font-semibold text-blue-600 group-hover:text-blue-700">{t('mode.send')}</div>
+              <div className="text-sm text-slate-500 mt-1">{t('mode.sendDesc')}</div>
             </button>
 
             <button
               onClick={() => setMode('receive')}
               className="w-full p-6 bg-white border-2 border-slate-200 rounded-xl hover:border-green-400 hover:shadow-lg transition-all group"
             >
-              <div className="text-xl font-semibold text-green-600 group-hover:text-green-700">接收模式</div>
-              <div className="text-sm text-slate-500 mt-1">监听端口接收其他设备的文件</div>
+              <div className="text-xl font-semibold text-green-600 group-hover:text-green-700">{t('mode.receive')}</div>
+              <div className="text-sm text-slate-500 mt-1">{t('mode.receiveDesc')}</div>
             </button>
 
             <button
               onClick={() => setMode('chat')}
               className="w-full p-6 bg-white border-2 border-slate-200 rounded-xl hover:border-purple-400 hover:shadow-lg transition-all group"
             >
-              <div className="text-xl font-semibold text-purple-600 group-hover:text-purple-700">聊天模式</div>
-              <div className="text-sm text-slate-500 mt-1">与其他设备实时文字聊天</div>
+              <div className="text-xl font-semibold text-purple-600 group-hover:text-purple-700">{t('mode.chat')}</div>
+              <div className="text-sm text-slate-500 mt-1">{t('mode.chatDesc')}</div>
+            </button>
+          </div>
+
+          <div className="absolute top-4 right-4">
+            <button
+              onClick={() => i18n.changeLanguage(i18n.language === 'zh' ? 'en' : 'zh')}
+              className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors"
+            >
+              {i18n.language === 'zh' ? 'EN' : '中文'}
             </button>
           </div>
         </div>
@@ -448,7 +459,7 @@ export default function App() {
         {/* 顶部导航 */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-slate-800">
-            {mode === 'send' ? '发送文件' : mode === 'receive' ? '接收文件' : '聊天'}
+            {mode === 'send' ? t('send.title') : mode === 'receive' ? t('receive.title') : t('chat.title')}
           </h1>
           <button
             onClick={async () => {
@@ -459,21 +470,21 @@ export default function App() {
             }}
             className="px-4 py-2 text-sm text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition"
           >
-            切换模式
+            {t('mode.switchMode')}
           </button>
         </div>
 
         {/* 本机信息 */}
         {mode !== 'chat' && (
           <div className={`p-4 rounded-xl ${mode === 'send' ? 'bg-blue-50 border border-blue-100' : 'bg-green-50 border border-green-100'}`}>
-            <p className="text-sm font-medium text-slate-600">本机 IP 地址</p>
+            <p className="text-sm font-medium text-slate-600">{t('common.localIp')}</p>
             <p className={`text-xl font-mono font-semibold ${mode === 'send' ? 'text-blue-600' : 'text-green-600'}`}>
               {localIp}
             </p>
             {mode === 'receive' && isReceiving && (
               <p className="text-sm text-green-600 mt-1 flex items-center gap-1">
                 <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                正在监听端口 7878
+                {t('receive.listening')}
               </p>
             )}
           </div>
@@ -484,19 +495,19 @@ export default function App() {
           <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4 shadow-sm">
             {/* 文件选择 */}
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">选择文件</label>
+              <label className="block text-sm font-medium text-slate-700 mb-2">{t('send.selectFile')}</label>
               <input
                 type="file"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
                 className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition"
               />
-              {file && <p className="text-xs text-slate-500 mt-2">已选择: {file.name}</p>}
+              {file && <p className="text-xs text-slate-500 mt-2">{t('send.selected')}{file.name}</p>}
             </div>
 
             {/* 设备列表 */}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
-                局域网设备 <span className="text-slate-400">({devices.length})</span>
+                {t('send.devices')} <span className="text-slate-400">({devices.length})</span>
               </label>
               {devices.length > 0 ? (
                 <div className="space-y-2 max-h-48 overflow-y-auto">
@@ -526,27 +537,27 @@ export default function App() {
                             : 'bg-slate-100 text-slate-400 cursor-not-allowed'
                         }`}
                       >
-                        发送
+                        {t('common.send')}
                       </button>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="text-center py-8 text-slate-400">
-                  <div className="animate-pulse">正在搜索设备...</div>
+                  <div className="animate-pulse">{t('chat.searching')}</div>
                 </div>
               )}
             </div>
 
             {/* 手动输入 */}
             <div className="pt-4 border-t border-slate-100">
-              <label className="block text-sm font-medium text-slate-700 mb-2">或手动输入 IP 地址</label>
+              <label className="block text-sm font-medium text-slate-700 mb-2">{t('send.manualIp')}</label>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={targetIp}
                   onChange={(e) => setTargetIp(e.target.value)}
-                  placeholder="例如: 192.168.1.100"
+                  placeholder={t('send.ipPlaceholder')}
                   className="flex-1 min-w-0 px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
                 <button
@@ -558,7 +569,7 @@ export default function App() {
                       : 'bg-blue-500 text-white hover:bg-blue-600'
                   }`}
                 >
-                  {sendStatus === 'sending' ? '发送中...' : '发送'}
+                  {sendStatus === 'sending' ? t('send.sending') : t('common.send')}
                 </button>
               </div>
             </div>
@@ -568,19 +579,19 @@ export default function App() {
               <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                  <span className="text-blue-700">正在发送到 {sendingTo}...</span>
+                  <span className="text-blue-700">{t('send.sendingTo')}{sendingTo}...</span>
                 </div>
               </div>
             )}
             {sendStatus === 'success' && (
               <div className="p-4 bg-green-50 border border-green-200 rounded-lg flex items-center justify-between">
-                <span className="text-green-700 font-medium">发送成功！</span>
+                <span className="text-green-700 font-medium">{t('send.success')}</span>
                 <button onClick={clearSendStatus} className="text-green-600 hover:text-green-800 text-xl font-bold">&times;</button>
               </div>
             )}
             {sendStatus === 'error' && (
               <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
-                <span className="text-red-700">发送失败，请检查对方是否在线</span>
+                <span className="text-red-700">{t('send.failed')}</span>
                 <button onClick={clearSendStatus} className="text-red-600 hover:text-red-800 text-xl font-bold">&times;</button>
               </div>
             )}
@@ -592,7 +603,7 @@ export default function App() {
           <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4 shadow-sm">
             {/* 保存目录 */}
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">保存目录</label>
+              <label className="block text-sm font-medium text-slate-700 mb-2">{t('receive.saveDir')}</label>
 
               {/* 桌面端：显示选择文件夹按钮 */}
               {!isAndroid && (
@@ -601,7 +612,7 @@ export default function App() {
                     onClick={handlePickFolder}
                     className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition font-medium text-sm"
                   >
-                    选择文件夹
+                    {t('receive.selectFolder')}
                   </button>
                   <button
                     onClick={() => {
@@ -610,7 +621,7 @@ export default function App() {
                     }}
                     className="px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 transition font-medium text-sm"
                   >
-                    手动输入
+                    {t('receive.manualInput')}
                   </button>
                 </div>
               )}
@@ -618,14 +629,14 @@ export default function App() {
               {/* Android：SAF 文件夹选择 + 常用路径快速选择 */}
               {isAndroid && (
                 <div className="space-y-2 mb-3">
-                  <p className="text-xs text-slate-500">选择保存位置：</p>
+                  <p className="text-xs text-slate-500">{t('receive.android.selectLocation')}</p>
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       onClick={handlePickFolder}
                       className="px-3 py-2 rounded-lg border-2 border-amber-300 bg-amber-50 hover:border-amber-500 transition text-left overflow-hidden"
                     >
-                      <div className="font-medium text-xs text-amber-800 truncate">📂 选择文件夹</div>
-                      <div className="text-xs text-amber-500 mt-0.5 truncate">系统文件选择器</div>
+                      <div className="font-medium text-xs text-amber-800 truncate">{t('receive.android.picker')}</div>
+                      <div className="text-xs text-amber-500 mt-0.5 truncate">{t('receive.android.pickerDesc')}</div>
                     </button>
                     <button
                       onClick={() => handleQuickSelectPath('/storage/emulated/0/Download')}
@@ -635,8 +646,8 @@ export default function App() {
                           : 'border-slate-200 bg-white hover:border-green-300'
                       }`}
                     >
-                      <div className="font-medium text-xs text-slate-800 truncate">📥 下载目录</div>
-                      <div className="text-xs text-slate-400 mt-0.5 truncate">/storage/.../Download</div>
+                      <div className="font-medium text-xs text-slate-800 truncate">{t('receive.android.downloads')}</div>
+                      <div className="text-xs text-slate-400 mt-0.5 truncate">{t('receive.android.downloadsPath')}</div>
                     </button>
                     <button
                       onClick={() => handleQuickSelectPath('/storage/emulated/0/Documents')}
@@ -646,8 +657,8 @@ export default function App() {
                           : 'border-slate-200 bg-white hover:border-green-300'
                       }`}
                     >
-                      <div className="font-medium text-xs text-slate-800 truncate">📄 文档目录</div>
-                      <div className="text-xs text-slate-400 mt-0.5 truncate">/storage/.../Documents</div>
+                      <div className="font-medium text-xs text-slate-800 truncate">{t('receive.android.documents')}</div>
+                      <div className="text-xs text-slate-400 mt-0.5 truncate">{t('receive.android.documentsPath')}</div>
                     </button>
                     <button
                       onClick={() => {
@@ -656,8 +667,8 @@ export default function App() {
                       }}
                       className="px-3 py-2 rounded-lg border-2 border-slate-200 bg-white hover:border-amber-300 transition text-left overflow-hidden"
                     >
-                      <div className="font-medium text-xs text-slate-800 truncate">✏️ 自定义</div>
-                      <div className="text-xs text-slate-400 mt-0.5 truncate">输入路径</div>
+                      <div className="font-medium text-xs text-slate-800 truncate">{t('receive.android.custom')}</div>
+                      <div className="text-xs text-slate-400 mt-0.5 truncate">{t('receive.android.customDesc')}</div>
                     </button>
                   </div>
                 </div>
@@ -670,7 +681,7 @@ export default function App() {
                     type="text"
                     value={saveDirInput}
                     onChange={(e) => setSaveDirInput(e.target.value)}
-                    placeholder="/storage/emulated/0/Download"
+                    placeholder={t('receive.android.customPlaceholder')}
                     className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono text-sm"
                   />
                   <div className="flex gap-2">
@@ -678,13 +689,13 @@ export default function App() {
                       onClick={handleSaveDirInputChange}
                       className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition font-medium text-sm"
                     >
-                      确认
+                      {t('common.confirm')}
                     </button>
                     <button
                       onClick={() => setEditingSaveDir(false)}
                       className="px-4 py-2 bg-slate-300 text-slate-700 rounded-lg hover:bg-slate-400 transition font-medium text-sm"
                     >
-                      取消
+                      {t('common.cancel')}
                     </button>
                   </div>
                 </div>
@@ -693,8 +704,8 @@ export default function App() {
               {/* 当前选中的路径 */}
               {saveDir && !editingSaveDir && (
                 <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded-lg">
-                  <div className="text-xs text-green-600 mb-1">当前保存位置：</div>
-                  <div className="text-sm text-slate-700 font-mono break-all">{formatSaveDir(saveDir)}</div>
+                  <div className="text-xs text-green-600 mb-1">{t('receive.currentPath')}</div>
+                  <div className="text-sm text-slate-700 font-mono break-all">{formatSaveDir(saveDir, t)}</div>
                 </div>
               )}
             </div>
@@ -704,27 +715,27 @@ export default function App() {
               {receivingFile ? (
                 <div className="text-blue-600 font-medium flex items-center justify-center gap-2">
                   <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                  正在接收: {receivingFile}
+                  {t('receive.receiving')}{receivingFile}
                 </div>
               ) : isReceiving ? (
                 <>
                   <div className="text-green-600 font-semibold text-lg flex items-center justify-center gap-2">
                     <span className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
-                    等待接收文件...
+                    {t('receive.waiting')}
                   </div>
                   <div className="text-sm text-slate-500 mt-2">
-                    其他设备可以发送文件到 <span className="font-mono text-slate-700">{localIp}:7878</span>
+                    {t('receive.instruction')}<span className="font-mono text-slate-700">{localIp}:7878</span>
                   </div>
                 </>
               ) : (
-                <div className="text-slate-500">正在启动接收服务...</div>
+                <div className="text-slate-500">{t('receive.startup')}</div>
               )}
             </div>
 
             {/* 已接收文件 */}
             {receivedFiles.length > 0 && (
               <div className="pt-4 border-t border-slate-100">
-                <label className="block text-sm font-medium text-slate-700 mb-2">已接收的文件</label>
+                <label className="block text-sm font-medium text-slate-700 mb-2">{t('receive.receivedFiles')}</label>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
                   {receivedFiles.map((f, i) => (
                     <div key={i} className="p-3 bg-green-50 border border-green-100 rounded-lg flex items-center justify-between">
@@ -740,7 +751,7 @@ export default function App() {
             {devices.length > 0 && (
               <div className="pt-4 border-t border-slate-100">
                 <label className="block text-sm font-medium text-slate-700 mb-2">
-                  发现的其他设备 <span className="text-slate-400">({devices.length})</span>
+                  {t('receive.discoveredDevices')} <span className="text-slate-400">({devices.length})</span>
                 </label>
                 <div className="space-y-1">
                   {devices.map((device) => (
@@ -761,11 +772,11 @@ export default function App() {
               /* 设备选择界面 */
               <div className="p-5 space-y-4">
                 <div className="p-4 bg-purple-50 border border-purple-100 rounded-xl">
-                  <p className="text-sm font-medium text-slate-600">本机 IP 地址</p>
+                  <p className="text-sm font-medium text-slate-600">{t('common.localIp')}</p>
                   <p className="text-xl font-mono font-semibold text-purple-600">{localIp}</p>
                   <p className="text-sm text-purple-600 mt-1 flex items-center gap-1">
                     <span className="w-2 h-2 bg-purple-500 rounded-full animate-pulse"></span>
-                    聊天服务器已启动（端口 7879）
+                    {t('chat.serverStarted')}
                   </p>
                 </div>
 
@@ -784,7 +795,7 @@ export default function App() {
 
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-2">
-                    选择聊天对象 <span className="text-slate-400">({devices.length})</span>
+                    {t('chat.selectPeer')} <span className="text-slate-400">({devices.length})</span>
                   </label>
                   {devices.length > 0 ? (
                     <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -801,15 +812,15 @@ export default function App() {
                           <button
                             className="px-4 py-2 text-sm font-medium bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition"
                           >
-                            开始聊天
+                            {t('chat.startChat')}
                           </button>
                         </div>
                       ))}
                     </div>
                   ) : (
                     <div className="text-center py-12 text-slate-400">
-                      <div className="animate-pulse">正在搜索设备...</div>
-                      <div className="text-sm mt-2">确保对方设备也在聊天模式</div>
+                      <div className="animate-pulse">{t('chat.searching')}</div>
+                      <div className="text-sm mt-2">{t('chat.hint')}</div>
                     </div>
                   )}
                 </div>
@@ -821,20 +832,20 @@ export default function App() {
                 <div className="p-4 border-b border-slate-200 bg-purple-50 flex items-center justify-between">
                   <div>
                     <p className="font-medium text-slate-800">
-                      {devices.find(d => d.ip === activeChatIp)?.hostname || '未知设备'}
+                      {devices.find(d => d.ip === activeChatIp)?.hostname || t('chat.unknownDevice')}
                     </p>
                     <div className="flex items-center gap-2 text-sm">
                       <span className="font-mono text-slate-500">{activeChatIp}</span>
                       {chatConnected && (
                         <span className="flex items-center gap-1 text-green-600">
                           <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                          已连接
+                          {t('common.connected')}
                         </span>
                       )}
                       {!chatConnected && (
                         <span className="flex items-center gap-1 text-red-600">
                           <span className="w-2 h-2 bg-red-500 rounded-full"></span>
-                          未连接
+                          {t('common.disconnected')}
                         </span>
                       )}
                     </div>
@@ -843,7 +854,7 @@ export default function App() {
                     onClick={handleDisconnectChat}
                     className="px-4 py-2 text-sm font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition"
                   >
-                    断开
+                    {t('common.disconnect')}
                   </button>
                 </div>
 
@@ -867,7 +878,7 @@ export default function App() {
                 >
                   {chatMessages.length === 0 ? (
                     <div className="text-center text-slate-400 py-12">
-                      还没有消息，开始聊天吧
+                      {t('chat.emptyMessage')}
                     </div>
                   ) : (
                     <>
@@ -898,7 +909,7 @@ export default function App() {
                                 copiedMessageIndex === idx ? (
                                   <span className="text-xs text-green-600 flex items-center gap-0.5">
                                     <span>✓</span>
-                                    <span>已复制</span>
+                                    <span>{t('common.copied')}</span>
                                   </span>
                                 ) : (
                                   <button
@@ -907,7 +918,6 @@ export default function App() {
                                       handleCopyMessage(msg.content, idx);
                                     }}
                                     className="text-xs text-slate-500 hover:text-slate-700 transition flex items-center gap-0.5"
-                                    title="复制消息"
                                   >
                                     <span>📋</span>
                                   </button>
@@ -935,7 +945,7 @@ export default function App() {
                           handleSendChatMessage();
                         }
                       }}
-                      placeholder={chatConnected ? "输入消息..." : "未连接"}
+                      placeholder={chatConnected ? t('chat.inputPlaceholder') : t('common.disconnected')}
                       disabled={!chatConnected}
                       className="flex-1 min-w-0 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent disabled:bg-slate-100 disabled:text-slate-400"
                     />
@@ -948,10 +958,10 @@ export default function App() {
                           : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                       }`}
                     >
-                      发送
+                      {t('common.send')}
                     </button>
                   </div>
-                  <p className="text-xs text-slate-400 mt-2">按 Enter 发送消息</p>
+                  <p className="text-xs text-slate-400 mt-2">{t('chat.inputHint')}</p>
                 </div>
               </div>
             )}

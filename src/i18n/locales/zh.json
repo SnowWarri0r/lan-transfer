@@ -1,0 +1,86 @@
+{
+  "common": {
+    "localIp": "本机 IP",
+    "loading": "获取中...",
+    "send": "发送",
+    "cancel": "取消",
+    "confirm": "确认",
+    "disconnect": "断开",
+    "connected": "已连接",
+    "disconnected": "未连接",
+    "copied": "已复制"
+  },
+  "mode": {
+    "title": "局域网文件传输",
+    "send": "发送模式",
+    "sendDesc": "选择文件发送给其他设备",
+    "receive": "接收模式",
+    "receiveDesc": "监听端口接收其他设备的文件",
+    "chat": "聊天模式",
+    "chatDesc": "与其他设备实时文字聊天",
+    "switchMode": "切换模式"
+  },
+  "send": {
+    "title": "发送文件",
+    "selectFile": "选择文件",
+    "selected": "已选择: ",
+    "devices": "局域网设备",
+    "manualIp": "或手动输入 IP 地址",
+    "ipPlaceholder": "例如: 192.168.1.100",
+    "sending": "发送中...",
+    "sendingTo": "正在发送到 ",
+    "success": "发送成功！",
+    "failed": "发送失败，请检查对方是否在线",
+    "selectFileFirst": "请先选择文件",
+    "enterIp": "请输入目标IP地址"
+  },
+  "receive": {
+    "title": "接收文件",
+    "saveDir": "保存目录",
+    "selectFolder": "选择文件夹",
+    "manualInput": "手动输入",
+    "listening": "正在监听端口 7878",
+    "waiting": "等待接收文件...",
+    "instruction": "其他设备可以发送文件到 ",
+    "receiving": "正在接收: ",
+    "receivedFiles": "已接收的文件",
+    "discoveredDevices": "发现的其他设备",
+    "startup": "正在启动接收服务...",
+    "currentPath": "当前保存位置：",
+    "android": {
+      "selectLocation": "选择保存位置：",
+      "picker": "📂 选择文件夹",
+      "pickerDesc": "系统文件选择器",
+      "downloads": "📥 下载目录",
+      "downloadsPath": "/storage/.../Download",
+      "documents": "📄 文档目录",
+      "documentsPath": "/storage/.../Documents",
+      "custom": "✏️ 自定义",
+      "customDesc": "输入路径",
+      "customPlaceholder": "/storage/emulated/0/Download",
+      "internalStorage": "内部存储/"
+    }
+  },
+  "chat": {
+    "title": "聊天",
+    "serverStarted": "聊天服务器已启动（端口 7879）",
+    "selectPeer": "选择聊天对象",
+    "startChat": "开始聊天",
+    "searching": "正在搜索设备...",
+    "hint": "确保对方设备也在聊天模式",
+    "unknownDevice": "未知设备",
+    "emptyMessage": "还没有消息，开始聊天吧",
+    "inputPlaceholder": "输入消息...",
+    "inputHint": "按 Enter 发送消息",
+    "connectionLost": "连接已断开",
+    "connectionFailed": "连接失败: ",
+    "sendFailed": "发送失败: "
+  },
+  "error": {
+    "fetchIpFailed": "获取失败: ",
+    "downloadDirFailed": "无法获取默认下载目录",
+    "disconnectFailed": "断开连接失败:",
+    "stopChatFailed": "停止聊天服务失败:",
+    "copyFailed": "复制失败:"
+  }
+}
