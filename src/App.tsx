@@ -71,6 +71,7 @@ export default function App() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatConnectedRef = useRef<boolean>(false);
   const activeChatIpRef = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 检测是否为 Android 平台
   const [isAndroid, setIsAndroid] = useState<boolean>(false);
@@ -497,11 +498,24 @@ export default function App() {
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">{t('send.selectFile')}</label>
               <input
+                ref={fileInputRef}
                 type="file"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
-                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 transition"
+                className="hidden"
               />
-              {file && <p className="text-xs text-slate-500 mt-2">{t('send.selected')}{file.name}</p>}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full px-4 py-3 bg-blue-50 text-blue-700 rounded-lg border-2 border-blue-200 hover:bg-blue-100 hover:border-blue-300 transition-all font-medium text-sm flex items-center justify-center gap-2"
+              >
+                <span>📁</span>
+                <span>{file ? t('send.selected') + file.name : t('send.selectFile')}</span>
+              </button>
+              {file && (
+                <div className="mt-2 p-2 bg-blue-50 border border-blue-100 rounded-lg">
+                  <p className="text-xs text-blue-700 font-medium">{file.name}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{(file.size / 1024).toFixed(1)} KB</p>
+                </div>
+              )}
             </div>
 
             {/* 设备列表 */}
