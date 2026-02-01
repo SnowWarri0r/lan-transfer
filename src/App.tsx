@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -21,8 +22,30 @@ interface ChatMessage {
   is_me?: boolean;
 }
 
+interface FileQueueItem {
+  file: File;
+  id: string;
+  status: 'pending' | 'sending' | 'completed' | 'failed';
+  progress: number;
+  bytesTransferred: number;
+  speed: number;
+  error?: string;
+}
+
 type Mode = 'select' | 'send' | 'receive' | 'chat';
 type SendStatus = 'idle' | 'sending' | 'success' | 'error';
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function formatSpeed(bytesPerSec: number): string {
+  if (bytesPerSec < 1024) return `${bytesPerSec.toFixed(0)} B/s`;
+  if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+  return `${(bytesPerSec / (1024 * 1024)).toFixed(2)} MB/s`;
+}
 
 function formatSaveDir(dir: string, t: (key: string) => string): string {
   if (!dir.startsWith('content://')) return dir;
@@ -46,7 +69,8 @@ function formatSaveDir(dir: string, t: (key: string) => string): string {
 export default function App() {
   const { t, i18n } = useTranslation();
   const [mode, setMode] = useState<Mode>('select');
-  const [file, setFile] = useState<File | null>(null);
+  const [fileQueue, setFileQueue] = useState<FileQueueItem[]>([]);
+  const [currentFileIndex, setCurrentFileIndex] = useState<number>(-1);
   const [saveDir, setSaveDir] = useState<string | null>(null);
   const [editingSaveDir, setEditingSaveDir] = useState<boolean>(false);
   const [saveDirInput, setSaveDirInput] = useState<string>('');
@@ -59,6 +83,22 @@ export default function App() {
   const [sendingTo, setSendingTo] = useState<string>('');
   const [receivedFiles, setReceivedFiles] = useState<ReceivedFile[]>([]);
   const [receivingFile, setReceivingFile] = useState<string | null>(null);
+  const [receiveCancelledFile, setReceiveCancelledFile] = useState<string | null>(null);
+  const [receivingProgress, setReceivingProgress] = useState<{
+    fileName: string;
+    progress: number;
+    received: number;
+    total: number;
+  } | null>(null);
+  const [sendingProgress, setSendingProgress] = useState<{
+    fileName: string;
+    progress: number;
+    sent: number;
+    total: number;
+  } | null>(null);
+
+  // 取消发送标志
+  const cancelSendingRef = useRef<boolean>(false);
 
   // 聊天模式状态
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -75,6 +115,11 @@ export default function App() {
 
   // 检测是否为 Android 平台
   const [isAndroid, setIsAndroid] = useState<boolean>(false);
+
+  // 根据语言设置窗口标题
+  useEffect(() => {
+    getCurrentWindow().setTitle(t('mode.title')).catch(() => {});
+  }, [i18n.language]);
 
   useEffect(() => {
     // 检测平台
@@ -107,13 +152,46 @@ export default function App() {
 
     const unlistenReceived = listen<ReceivedFile>('file-received', (event) => {
       setReceivingFile(null);
+      setReceivingProgress(null);
       setReceivedFiles(prev => [event.payload, ...prev].slice(0, 10));
+    });
+
+    const unlistenCancelled = listen<string>('file-receive-cancelled', (event) => {
+      console.log('File receive cancelled:', event.payload);
+      setReceivingFile(null);
+      setReceivingProgress(null);
+      setReceiveCancelledFile(event.payload);
+      setTimeout(() => setReceiveCancelledFile(null), 3000);
+    });
+
+    const unlistenProgress = listen<{
+      file_name: string;
+      bytes_received: number;
+      total_bytes: number;
+      percentage: number;
+    }>('file-transfer-progress', (event) => {
+      // 接收进度
+      setReceivingProgress({
+        fileName: event.payload.file_name,
+        progress: event.payload.percentage,
+        received: event.payload.bytes_received,
+        total: event.payload.total_bytes,
+      });
+      // 发送进度（Android 发送时也会触发此事件）
+      setSendingProgress({
+        fileName: event.payload.file_name,
+        progress: event.payload.percentage,
+        sent: event.payload.bytes_received,
+        total: event.payload.total_bytes,
+      });
     });
 
     return () => {
       unlistenDevices.then(fn => fn());
       unlistenReceiving.then(fn => fn());
       unlistenReceived.then(fn => fn());
+      unlistenCancelled.then(fn => fn());
+      unlistenProgress.then(fn => fn());
     };
   }, []);
 
@@ -241,16 +319,22 @@ export default function App() {
   };
 
   const handleSendToDevice = async (device: Device) => {
-    if (!file) {
+    if (fileQueue.length === 0 && !isAndroid) {
       alert(t('send.selectFileFirst'));
       return;
     }
     setSelectedDevice(device);
-    await sendFile(device.ip);
+
+    // Android: 使用原生选择器并直接发送
+    if (isAndroid) {
+      await handleAndroidSend(device.ip);
+    } else {
+      await sendFiles(device.ip);
+    }
   };
 
   const handleSendManual = async () => {
-    if (!file) {
+    if (fileQueue.length === 0 && !isAndroid) {
       alert(t('send.selectFileFirst'));
       return;
     }
@@ -258,65 +342,237 @@ export default function App() {
       alert(t('send.enterIp'));
       return;
     }
-    await sendFile(targetIp);
+
+    // Android: 使用原生选择器并直接发送
+    if (isAndroid) {
+      await handleAndroidSend(targetIp);
+    } else {
+      await sendFiles(targetIp);
+    }
   };
 
-  const sendFile = async (ip: string) => {
-    if (!file) return;
-
-    const HIGH_WATER_MARK = 4 * 1024 * 1024; // 4MB buffer threshold
-
-    setSendStatus('sending');
-    setSendingTo(ip);
-
+  const handleAndroidSend = async (ip: string) => {
     try {
+      setSendStatus('sending');
+      setSendingTo(ip);
+      setSendingProgress(null);
+
+      // 调用 Android 原生多选
+      const uris: string[] = await invoke('pick_multiple_files');
+
+      if (!uris || uris.length === 0) {
+        setSendStatus('idle');
+        return;
+      }
+
+      // 使用 Rust 发送文件
+      await invoke('send_files_android', { uris, targetIp: ip });
+
+      setSendStatus('success');
+      setSendingProgress(null);
+      setSelectedDevice(null);
+    } catch (error) {
+      console.error('Android send failed:', error);
+      const errorMsg = String(error);
+
+      if (errorMsg.includes('Cancelled by user')) {
+        setSendStatus('idle');
+      } else if (errorMsg.includes('Cancelled by receiver') || errorMsg.includes('Broken pipe') || errorMsg.includes('Connection reset')) {
+        setSendStatus('idle');
+        alert(t('send.cancelledByReceiver'));
+      } else {
+        setSendStatus('error');
+        alert(t('send.failed') + ': ' + error);
+      }
+
+      setSendingProgress(null);
+      setSelectedDevice(null);
+    }
+  };
+
+  const updateItemStatus = (
+    index: number,
+    status: FileQueueItem['status'],
+    error?: string
+  ) => {
+    setFileQueue(prev => prev.map((item, i) =>
+      i === index ? { ...item, status, error } : item
+    ));
+  };
+
+  const updateFileProgress = (
+    index: number,
+    update: { progress: number; bytesTransferred: number; speed: number }
+  ) => {
+    setFileQueue(prev => prev.map((item, i) =>
+      i === index ? { ...item, ...update } : item
+    ));
+  };
+
+  const sendSingleFile = async (
+    file: File,
+    ip: string,
+    index: number,
+    total: number,
+    queueIndex: number
+  ): Promise<void> => {
+    const HIGH_WATER_MARK = 4 * 1024 * 1024;
+
+    return new Promise((resolve, reject) => {
       const socket = new WebSocket(`ws://${ip}:7878`);
       socket.binaryType = 'arraybuffer';
       let hasError = false;
 
+      let bytesSent = 0;
+      let startTime = Date.now();
+      let lastUpdateTime = startTime;
+      let lastBytesSent = 0;
+
       socket.onopen = async () => {
         try {
-          socket.send(JSON.stringify({ name: file.name }));
+          // Send metadata with new fields
+          socket.send(JSON.stringify({
+            name: file.name,
+            size: file.size,
+            index,
+            total
+          }));
 
+          // Stream file data
           const reader = file.stream().getReader();
+
           for (;;) {
+            // Check if cancelled
+            if (cancelSendingRef.current) {
+              reader.cancel();
+              socket.close();
+              hasError = true;
+              reject(new Error('Cancelled by user'));
+              return;
+            }
+
             const { done, value } = await reader.read();
             if (done) break;
 
-            // Back-pressure: wait if send buffer is congested
+            // Back-pressure control
             while (socket.bufferedAmount > HIGH_WATER_MARK) {
-              await new Promise((r) => setTimeout(r, 50));
+              await new Promise(r => setTimeout(r, 50));
+              // Check cancel during back-pressure wait
+              if (cancelSendingRef.current) {
+                reader.cancel();
+                socket.close();
+                hasError = true;
+                reject(new Error('Cancelled by user'));
+                return;
+              }
             }
+
             socket.send(value);
+            bytesSent += value.byteLength;
+
+            // Update progress every 100ms
+            const now = Date.now();
+            if (now - lastUpdateTime > 100) {
+              const timeDelta = (now - lastUpdateTime) / 1000;
+              const bytesDelta = bytesSent - lastBytesSent;
+              const speed = bytesDelta / timeDelta;
+
+              updateFileProgress(queueIndex, {
+                progress: (bytesSent / file.size) * 100,
+                bytesTransferred: bytesSent,
+                speed
+              });
+
+              lastUpdateTime = now;
+              lastBytesSent = bytesSent;
+            }
           }
+
           socket.close();
-        } catch {
+        } catch (err) {
           hasError = true;
-          setSendStatus('error');
-          setSelectedDevice(null);
+          reject(err);
         }
       };
 
       socket.onerror = () => {
         hasError = true;
-        setSendStatus('error');
-        setSelectedDevice(null);
+        reject(new Error('Connection failed'));
       };
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (!hasError) {
-          setSendStatus('success');
+          if (event.code === 4001) {
+            hasError = true;
+            reject(new Error('Cancelled by receiver'));
+          } else {
+            resolve();
+          }
         }
-        setSelectedDevice(null);
       };
-    } catch {
-      setSendStatus('error');
-      setSelectedDevice(null);
+    });
+  };
+
+  const sendFiles = async (ip: string) => {
+    if (fileQueue.length === 0) return;
+
+    cancelSendingRef.current = false; // Reset cancel flag
+    setSendStatus('sending');
+    setSendingTo(ip);
+    const totalFiles = fileQueue.length;
+    let allSucceeded = true;
+
+    for (let i = 0; i < fileQueue.length; i++) {
+      // Check if cancelled before starting next file
+      if (cancelSendingRef.current) {
+        updateItemStatus(i, 'failed', 'Cancelled');
+        allSucceeded = false;
+        break;
+      }
+
+      setCurrentFileIndex(i);
+      updateItemStatus(i, 'sending');
+
+      try {
+        await sendSingleFile(fileQueue[i].file, ip, i, totalFiles, i);
+        updateItemStatus(i, 'completed');
+      } catch (error) {
+        const errMsg = (error as Error).message;
+        const cancelledByReceiver = errMsg.includes('Cancelled by receiver');
+        updateItemStatus(i, 'failed', cancelledByReceiver ? t('send.cancelledByReceiver') : errMsg);
+        allSucceeded = false;
+        if (cancelledByReceiver) {
+          alert(t('send.cancelledByReceiver'));
+        }
+        break; // Stop on error
+      }
     }
+
+    const wasCancelled = cancelSendingRef.current;
+    setSendStatus(wasCancelled ? 'idle' : (allSucceeded ? 'success' : 'error'));
+    setCurrentFileIndex(-1);
+    setSelectedDevice(null);
+    cancelSendingRef.current = false; // Reset after done
   };
 
   const clearSendStatus = () => {
     setSendStatus('idle');
+  };
+
+  const cancelSending = async () => {
+    cancelSendingRef.current = true;
+    setSendingProgress(null);
+
+    // 同时取消Android端的发送（如果正在进行）
+    try {
+      await invoke('cancel_file_sending');
+    } catch (error) {
+      // Ignore error if command fails (e.g., on non-Android platforms)
+    }
+  };
+
+  const removeFileFromQueue = (id: string) => {
+    setFileQueue(prev => prev.filter(item => item.id !== id));
   };
 
   // 聊天处理函数
@@ -497,26 +753,188 @@ export default function App() {
             {/* 文件选择 */}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">{t('send.selectFile')}</label>
-              <input
-                ref={fileInputRef}
-                type="file"
-                onChange={(e) => setFile(e.target.files?.[0] || null)}
-                className="hidden"
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="w-full px-4 py-3 bg-blue-50 text-blue-700 rounded-lg border-2 border-blue-200 hover:bg-blue-100 hover:border-blue-300 transition-all font-medium text-sm flex items-center justify-center gap-2"
-              >
-                <span>📁</span>
-                <span>{file ? t('send.selected') + file.name : t('send.selectFile')}</span>
-              </button>
-              {file && (
-                <div className="mt-2 p-2 bg-blue-50 border border-blue-100 rounded-lg">
-                  <p className="text-xs text-blue-700 font-medium">{file.name}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">{(file.size / 1024).toFixed(1)} KB</p>
+
+              {/* 桌面端：支持多选和拖拽 */}
+              {!isAndroid && (
+                <>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      if (files.length > 0) {
+                        const items: FileQueueItem[] = files.map((file, index) => ({
+                          file,
+                          id: `${Date.now()}-${index}`,
+                          status: 'pending',
+                          progress: 0,
+                          bytesTransferred: 0,
+                          speed: 0,
+                        }));
+                        setFileQueue(items);
+                      }
+                      // Reset input to allow selecting same files again
+                      e.target.value = '';
+                    }}
+                    className="hidden"
+                  />
+                  <div
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.currentTarget.classList.remove('border-blue-400', 'bg-blue-50');
+                      const files = Array.from(e.dataTransfer.files);
+                      if (files.length > 0) {
+                        const items: FileQueueItem[] = files.map((file, index) => ({
+                          file,
+                          id: `${Date.now()}-${index}`,
+                          status: 'pending',
+                          progress: 0,
+                          bytesTransferred: 0,
+                          speed: 0,
+                        }));
+                        setFileQueue(items);
+                      }
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.currentTarget.classList.add('border-blue-400', 'bg-blue-100');
+                    }}
+                    onDragLeave={(e) => {
+                      e.currentTarget.classList.remove('border-blue-400', 'bg-blue-100');
+                    }}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center transition-colors cursor-pointer hover:border-blue-300 hover:bg-blue-50"
+                  >
+                    <div className="text-4xl mb-2">📁</div>
+                    <p className="font-medium text-slate-700">{t('send.dragDropHint')}</p>
+                    <p className="text-sm text-slate-500 mt-1">{t('send.orClickToSelect')}</p>
+                  </div>
+                </>
+              )}
+
+              {/* Android端：简洁提示 */}
+              {isAndroid && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <p className="text-sm text-slate-600 text-center">
+                    📱 {t('send.androidHintShort')}
+                  </p>
+                </div>
+              )}
+
+              {/* 文件队列 */}
+              {fileQueue.length > 0 && (
+                <div className="space-y-2 max-h-80 overflow-y-auto mt-3">
+                  {fileQueue.map((item) => (
+                    <div key={item.id} className="border rounded-lg p-3 bg-white">
+                      <div className="flex justify-between items-center">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm truncate">{item.file.name}</p>
+                          <p className="text-xs text-slate-500">
+                            {formatBytes(item.file.size)}
+                            {item.status === 'sending' && item.speed > 0 &&
+                              ` - ${formatSpeed(item.speed)}`
+                            }
+                          </p>
+                        </div>
+
+                        {/* 状态图标和删除按钮 */}
+                        <div className="ml-3 flex items-center gap-2">
+                          {item.status === 'pending' && (
+                            <>
+                              <span className="text-slate-400">⏳</span>
+                              <button
+                                onClick={() => removeFileFromQueue(item.id)}
+                                className="text-red-500 hover:text-red-700 text-lg"
+                                title={t('send.removeFile')}
+                              >
+                                🗑️
+                              </button>
+                            </>
+                          )}
+                          {item.status === 'sending' && <span className="text-blue-500">📤</span>}
+                          {item.status === 'completed' && <span className="text-green-500">✅</span>}
+                          {item.status === 'failed' && <span className="text-red-500">❌</span>}
+                        </div>
+                      </div>
+
+                      {/* 进度条 */}
+                      {item.status === 'sending' && (
+                        <div className="mt-2">
+                          <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                            <div
+                              className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${item.progress}%` }}
+                            />
+                          </div>
+                          <p className="text-xs text-slate-600 mt-1">{item.progress.toFixed(1)}%</p>
+                        </div>
+                      )}
+
+                      {item.error && (
+                        <p className="text-xs text-red-500 mt-1">{item.error}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 整体进度（含取消按钮） */}
+              {currentFileIndex >= 0 && (
+                <div className="p-4 bg-blue-50 rounded-lg mt-3 border border-blue-200">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-blue-700">
+                        {t('send.sendingFile')} {currentFileIndex + 1} / {fileQueue.length}
+                      </p>
+                      <p className="text-xs text-blue-500 mt-0.5">{t('send.sendingTo')}{sendingTo}</p>
+                    </div>
+                    <button
+                      onClick={cancelSending}
+                      className="px-3 py-1.5 bg-red-500 text-white text-xs rounded hover:bg-red-600 transition-colors flex-shrink-0 whitespace-nowrap"
+                    >
+                      {t('common.cancel')}
+                    </button>
+                  </div>
+                  <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
+                    <div
+                      className="bg-blue-600 h-3 rounded-full transition-all duration-300"
+                      style={{ width: `${((currentFileIndex + 1) / fileQueue.length) * 100}%` }}
+                    />
+                  </div>
                 </div>
               )}
             </div>
+
+            {/* 发送进度条（Android/桌面通用） */}
+            {sendingProgress && sendStatus === 'sending' && (
+              <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <div className="w-4 h-4 border-2 border-green-500 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
+                    <span className="font-medium text-green-700 text-sm truncate">{t('send.sending')}: {sendingProgress.fileName}</span>
+                  </div>
+                  <button
+                    onClick={cancelSending}
+                    className="px-3 py-1.5 bg-red-500 text-white text-xs rounded hover:bg-red-600 transition-colors flex-shrink-0 whitespace-nowrap"
+                  >
+                    {t('common.cancel')}
+                  </button>
+                </div>
+
+                <div className="w-full bg-green-200 rounded-full h-3 overflow-hidden">
+                  <div
+                    className="bg-green-600 h-3 rounded-full transition-all duration-300"
+                    style={{ width: `${sendingProgress.progress}%` }}
+                  />
+                </div>
+
+                <div className="flex justify-between text-xs text-slate-600 mt-1">
+                  <span>{sendingProgress.progress.toFixed(1)}%</span>
+                  <span>{formatBytes(sendingProgress.sent)} / {formatBytes(sendingProgress.total)}</span>
+                </div>
+              </div>
+            )}
 
             {/* 设备列表 */}
             <div>
@@ -544,9 +962,9 @@ export default function App() {
                           e.stopPropagation();
                           handleSendToDevice(device);
                         }}
-                        disabled={!file || sendStatus === 'sending'}
+                        disabled={(!isAndroid && fileQueue.length === 0) || sendStatus === 'sending'}
                         className={`px-4 py-2 text-sm font-medium rounded-lg transition ${
-                          file && sendStatus !== 'sending'
+                          (isAndroid || fileQueue.length > 0) && sendStatus !== 'sending'
                             ? 'bg-blue-500 text-white hover:bg-blue-600'
                             : 'bg-slate-100 text-slate-400 cursor-not-allowed'
                         }`}
@@ -576,9 +994,9 @@ export default function App() {
                 />
                 <button
                   onClick={handleSendManual}
-                  disabled={sendStatus === 'sending'}
+                  disabled={(!isAndroid && fileQueue.length === 0) || sendStatus === 'sending'}
                   className={`px-4 py-2 font-medium rounded-lg transition whitespace-nowrap shrink-0 ${
-                    sendStatus === 'sending'
+                    (!isAndroid && fileQueue.length === 0) || sendStatus === 'sending'
                       ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                       : 'bg-blue-500 text-white hover:bg-blue-600'
                   }`}
@@ -588,8 +1006,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* 发送状态 */}
-            {sendStatus === 'sending' && (
+            {/* 发送状态（仅 Android 或队列未启动时显示，桌面端由整体进度栏覆盖） */}
+            {sendStatus === 'sending' && currentFileIndex < 0 && (
               <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
@@ -725,14 +1143,49 @@ export default function App() {
             </div>
 
             {/* 接收状态 */}
-            <div className="p-6 bg-slate-50 rounded-lg text-center">
-              {receivingFile ? (
+            <div className="p-6 bg-slate-50 rounded-lg">
+              {receivingFile && receivingProgress ? (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin flex-shrink-0"></div>
+                      <span className="font-medium text-blue-600 truncate">{receivingProgress.fileName}</span>
+                    </div>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await invoke('cancel_file_receiving');
+                        } catch (e) {
+                          console.error('Failed to cancel receiving:', e);
+                        }
+                        setReceivingFile(null);
+                        setReceivingProgress(null);
+                      }}
+                      className="px-3 py-1.5 bg-red-500 text-white text-xs rounded hover:bg-red-600 transition-colors flex-shrink-0 whitespace-nowrap"
+                    >
+                      {t('receive.cancelReceive')}
+                    </button>
+                  </div>
+
+                  <div className="w-full bg-blue-200 rounded-full h-3 overflow-hidden">
+                    <div
+                      className="bg-blue-600 h-3 rounded-full transition-all duration-300"
+                      style={{ width: `${receivingProgress.progress}%` }}
+                    />
+                  </div>
+
+                  <div className="flex justify-between text-xs text-slate-600">
+                    <span>{receivingProgress.progress.toFixed(1)}%</span>
+                    <span>{formatBytes(receivingProgress.received)} / {formatBytes(receivingProgress.total)}</span>
+                  </div>
+                </div>
+              ) : receivingFile ? (
                 <div className="text-blue-600 font-medium flex items-center justify-center gap-2">
                   <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
                   {t('receive.receiving')}{receivingFile}
                 </div>
               ) : isReceiving ? (
-                <>
+                <div className="text-center">
                   <div className="text-green-600 font-semibold text-lg flex items-center justify-center gap-2">
                     <span className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
                     {t('receive.waiting')}
@@ -740,11 +1193,22 @@ export default function App() {
                   <div className="text-sm text-slate-500 mt-2">
                     {t('receive.instruction')}<span className="font-mono text-slate-700">{localIp}:7878</span>
                   </div>
-                </>
+                </div>
               ) : (
-                <div className="text-slate-500">{t('receive.startup')}</div>
+                <div className="text-slate-500 text-center">{t('receive.startup')}</div>
               )}
             </div>
+
+            {/* 传输取消提示 */}
+            {receiveCancelledFile && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between">
+                <span className="text-amber-700 text-sm">{t('receive.transferCancelled')}{receiveCancelledFile}</span>
+                <button
+                  onClick={() => setReceiveCancelledFile(null)}
+                  className="text-amber-600 hover:text-amber-800 text-lg font-bold"
+                >&times;</button>
+              </div>
+            )}
 
             {/* 已接收文件 */}
             {receivedFiles.length > 0 && (

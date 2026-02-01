@@ -16,6 +16,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             network::transfer::start_websocket_server,
             network::transfer::select_folder,
+            network::transfer::pick_multiple_files,
+            network::transfer::send_files_android,
+            network::transfer::cancel_file_sending,
+            network::transfer::cancel_file_receiving,
             network::transfer::get_local_ip,
             network::transfer::get_download_dir,
             network::transfer::start_discovery,

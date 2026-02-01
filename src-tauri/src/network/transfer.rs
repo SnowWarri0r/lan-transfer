@@ -8,8 +8,8 @@ use base64::{engine::general_purpose, Engine as _};
 use tauri::Manager;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async_with_config};
-use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig};
-use futures_util::StreamExt;
+use tokio_tungstenite::tungstenite::protocol::{Message, WebSocketConfig, CloseFrame};
+use futures_util::{StreamExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -23,6 +23,20 @@ use std::collections::HashMap;
 #[derive(Deserialize)]
 struct FileMeta {
     name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    index: u32,
+    #[serde(default)]
+    total: u32,
+}
+
+#[derive(Serialize, Clone, Debug)]
+struct FileProgress {
+    file_name: String,
+    bytes_received: u64,
+    total_bytes: u64,
+    percentage: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -37,8 +51,24 @@ type DeviceList = Arc<Mutex<HashMap<String, Device>>>;
 // 全局状态：防止服务重复启动
 static DISCOVERY_RUNNING: AtomicBool = AtomicBool::new(false);
 static WEBSOCKET_RUNNING: AtomicBool = AtomicBool::new(false);
+// 取消发送标志
+static CANCEL_SENDING: AtomicBool = AtomicBool::new(false);
+// 取消接收标志
+static CANCEL_RECEIVING: AtomicBool = AtomicBool::new(false);
 // 当前保存目录（可在服务器运行期间更新）
 static CURRENT_SAVE_DIR: Mutex<String> = Mutex::new(String::new());
+
+#[tauri::command]
+/// 取消正在进行的文件发送
+pub fn cancel_file_sending() {
+    CANCEL_SENDING.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+/// 取消正在进行的文件接收
+pub fn cancel_file_receiving() {
+    CANCEL_RECEIVING.store(true, Ordering::SeqCst);
+}
 
 #[tauri::command]
 /// 启动设备发现服务
@@ -83,6 +113,9 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
     // 组播地址�?39.x.x.x 为管理范围组播地址�?
     let multicast_addr: Ipv4Addr = Ipv4Addr::new(239, 255, 77, 88);
 
+    // 解析本机 IP 为 Ipv4Addr，用于指定组播发送接口
+    let local_ipv4: Ipv4Addr = local_ip.parse().unwrap_or(Ipv4Addr::UNSPECIFIED);
+
     // 使用 socket2 创建可重用的 UDP socket
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
@@ -90,12 +123,14 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
     socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
     socket.set_multicast_ttl_v4(255)?;
+    // 显式指定组播发送接口，避免 Windows 多网卡时发到错误接口
+    socket.set_multicast_if_v4(&local_ipv4)?;
 
     let addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 37821);
     socket.bind(&addr.into())?;
 
     // 加入组播�?
-    socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED)?;
+    socket.join_multicast_v4(&multicast_addr, &local_ipv4)?;
 
     // 转换为标准库�?UdpSocket
     let socket: UdpSocket = socket.into();
@@ -105,12 +140,24 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
     // 克隆 socket 用于发�?
     let socket_send = socket.try_clone()?;
     let instance_id_clone = instance_id.clone();
+    let devices_for_send = devices.clone();
 
-    // 任务1：定期发送组�?(格式: FILETRANSFER:IP:HOSTNAME:INSTANCE_ID)
+    // 任务1：定期发送组播 + 单播回复已知设备
+    // (格式: FILETRANSFER:IP:HOSTNAME:INSTANCE_ID)
     tokio::spawn(async move {
         loop {
             let msg = format!("FILETRANSFER:{}:{}:{}", local_ip, hostname, instance_id_clone);
+            // 组播发送
             let _ = socket_send.send_to(msg.as_bytes(), multicast_target);
+            // 单播发送给所有已知设备（解决路由器组播单向不通的问题）
+            if let Ok(known) = devices_for_send.lock() {
+                for device in known.values() {
+                    if let Ok(ip) = device.ip.parse::<Ipv4Addr>() {
+                        let target = SocketAddrV4::new(ip, 37821);
+                        let _ = socket_send.send_to(msg.as_bytes(), target);
+                    }
+                }
+            }
             tokio::time::sleep(Duration::from_secs(3)).await;
         }
     });
@@ -142,9 +189,7 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
                                     };
 
                                     let mut devices = devices_clone.lock().unwrap();
-                                    // �?IP+实例ID 作为 key，支持同机器多实�?
-                                    let key = format!("{}:{}", ip, remote_instance_id);
-                                    devices.insert(key, device);
+                                    devices.insert(ip.clone(), device);
 
                                     // 发送更新到前端
                                     let device_list: Vec<Device> = devices.values().cloned().collect();
@@ -187,20 +232,16 @@ async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error:
 #[tauri::command]
 /// 获取系统下载目录
 pub fn get_download_dir(app: AppHandle) -> Result<String, String> {
-    // 桌面端：使用系统下载目录
-    if let Some(dir) = dirs::download_dir().or_else(|| dirs::home_dir()) {
-        return Ok(dir.to_string_lossy().to_string());
-    }
-
-    // Android 回退：使用应用数据目录下�?Downloads
+    // Android: 直接使用标准下载目录
     #[cfg(target_os = "android")]
     {
-        use tauri::Manager;
-        if let Ok(path) = app.path().app_data_dir() {
-            let download_path = path.join("Downloads");
-            let _ = std::fs::create_dir_all(&download_path);
-            return Ok(download_path.to_string_lossy().to_string());
-        }
+        return Ok("/storage/emulated/0/Download".to_string());
+    }
+
+    // 桌面端：使用系统下载目录
+    #[allow(unreachable_code)]
+    if let Some(dir) = dirs::download_dir().or_else(|| dirs::home_dir()) {
+        return Ok(dir.to_string_lossy().to_string());
     }
 
     let _ = app; // 桌面端避�?unused 警告
@@ -247,6 +288,163 @@ pub async fn select_folder(app: AppHandle) -> Result<Option<String>, String> {
     {
         let storage = app.state::<AndroidStorage>();
         storage.pick_folder()
+    }
+}
+
+#[tauri::command]
+/// Android 原生多文件选择器
+pub async fn pick_multiple_files(app: AppHandle) -> Result<Vec<String>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let storage = app.state::<AndroidStorage>();
+        storage.pick_multiple_files()
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("pick_multiple_files is only supported on Android".to_string())
+    }
+}
+
+#[tauri::command]
+/// Android: 从 content:// URI 发送多个文件
+pub async fn send_files_android(
+    uris: Vec<String>,
+    target_ip: String,
+    window: Window,
+    app: AppHandle,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::connect_async;
+        use base64::{engine::general_purpose, Engine as _};
+
+        // Reset cancel flag at start
+        CANCEL_SENDING.store(false, Ordering::SeqCst);
+
+        let storage = app.state::<AndroidStorage>();
+        let total = uris.len() as u32;
+
+        for (index, uri) in uris.iter().enumerate() {
+            // Check if cancelled before starting next file
+            if CANCEL_SENDING.load(Ordering::SeqCst) {
+                CANCEL_SENDING.store(false, Ordering::SeqCst);
+                return Err("Cancelled by user".to_string());
+            }
+            // 1. 获取文件信息
+            let (file_name, file_size) = storage.get_file_info(uri.clone())
+                .map_err(|e| format!("Failed to get file info for {}: {}", uri, e))?;
+
+            window.emit("file-sending", &file_name)
+                .map_err(|e| format!("Failed to emit event: {}", e))?;
+
+            // 2. 建立 WebSocket 连接
+            let ws_url = format!("ws://{}:7878", target_ip);
+            let request = ws_url.into_client_request()
+                .map_err(|e| format!("Failed to create request: {}", e))?;
+
+            let (ws_stream, _) = connect_async(request).await
+                .map_err(|e| format!("Failed to connect to {}: {}", target_ip, e))?;
+
+            let (mut write, mut read) = ws_stream.split();
+
+            // 3. 发送文件元数据
+            let meta = serde_json::json!({
+                "name": file_name,
+                "size": file_size,
+                "index": index,
+                "total": total,
+            });
+            let meta_str = serde_json::to_string(&meta)
+                .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
+
+            write.send(Message::Text(meta_str)).await
+                .map_err(|e| format!("Failed to send metadata: {}", e))?;
+
+            // 4. 分块读取并发送文件内容
+            const CHUNK_SIZE: i32 = 256 * 1024; // 256KB chunks
+            let mut offset: u64 = 0;
+            let mut bytes_sent: u64 = 0;
+
+            loop {
+                // Check if cancelled during file transfer
+                if CANCEL_SENDING.load(Ordering::SeqCst) {
+                    // Close the connection gracefully
+                    let _ = write.send(Message::Close(None)).await;
+                    CANCEL_SENDING.store(false, Ordering::SeqCst);
+                    return Err("Cancelled by user".to_string());
+                }
+
+                let (base64_data, bytes_read) = storage.read_uri_chunk(
+                    uri.clone(),
+                    offset,
+                    CHUNK_SIZE
+                ).map_err(|e| format!("Failed to read chunk: {}", e))?;
+
+                if bytes_read == 0 {
+                    break;
+                }
+
+                // Decode base64 to binary
+                let binary_data = general_purpose::STANDARD.decode(&base64_data)
+                    .map_err(|e| format!("Failed to decode base64: {}", e))?;
+
+                // Send binary chunk
+                if let Err(e) = write.send(Message::Binary(binary_data)).await {
+                    // 连接断开，检查是否是接收端取消（Close 4001 可能在接收缓冲区中）
+                    if let Ok(Some(Ok(Message::Close(Some(frame))))) =
+                        tokio::time::timeout(Duration::from_millis(500), read.next()).await
+                    {
+                        let code: u16 = frame.code.into();
+                        if code == 4001 {
+                            return Err("Cancelled by receiver".to_string());
+                        }
+                    }
+                    return Err(format!("Failed to send chunk: {}", e));
+                }
+
+                offset += bytes_read as u64;
+                bytes_sent += bytes_read as u64;
+
+                // Emit progress
+                let percentage = (bytes_sent as f64 / file_size as f64) * 100.0;
+                let _ = window.emit("file-transfer-progress", FileProgress {
+                    file_name: file_name.clone(),
+                    bytes_received: bytes_sent,
+                    total_bytes: file_size,
+                    percentage,
+                });
+
+                if bytes_sent >= file_size {
+                    break;
+                }
+            }
+
+            // 5. 关闭连接
+            write.send(Message::Close(None)).await
+                .map_err(|e| format!("Failed to close connection: {}", e))?;
+
+            // 6. 等待接收端关闭响应，检测是否被取消
+            if let Some(Ok(Message::Close(Some(frame)))) = read.next().await {
+                let code: u16 = frame.code.into();
+                if code == 4001 {
+                    return Err("Cancelled by receiver".to_string());
+                }
+            }
+
+            window.emit("file-sent", &file_name)
+                .map_err(|e| format!("Failed to emit event: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (uris, target_ip, window, app);
+        Err("send_files_android is only supported on Android".to_string())
     }
 }
 
@@ -304,13 +502,21 @@ async fn handle_websocket_connection(
         ..Default::default()
     };
     let ws_stream = accept_async_with_config(stream, Some(ws_config)).await?;
-    let (_write, mut read) = ws_stream.split();
+    let (mut write, mut read) = ws_stream.split();
+
+    // Reset cancel receiving flag at start of each connection
+    CANCEL_RECEIVING.store(false, Ordering::SeqCst);
 
     let mut file: Option<File> = None;
     #[cfg(target_os = "android")]
     let mut writer_handle: Option<i64> = None;
+    #[cfg(target_os = "android")]
+    let mut document_uri: Option<String> = None;
     let mut file_name: Option<String> = None;
     let mut bytes_received: u64 = 0;
+    let mut total_bytes: Option<u64> = None;
+    let mut last_progress_emit: u64 = 0;
+    const PROGRESS_INTERVAL: u64 = 100 * 1024; // 100KB
     #[cfg(target_os = "android")]
     let is_content_uri = save_dir.starts_with("content://");
 
@@ -319,14 +525,25 @@ async fn handle_websocket_connection(
             Message::Text(json_str) => {
                 if let Ok(meta) = serde_json::from_str::<FileMeta>(&json_str) {
                     file_name = Some(meta.name.clone());
+                    total_bytes = Some(meta.size);
+                    bytes_received = 0;
+                    last_progress_emit = 0;
+
+                    // Log file info with index/total if available
+                    if meta.total > 0 {
+                        println!("Receiving file {} ({}/{}) - {} bytes",
+                                 meta.name, meta.index + 1, meta.total, meta.size);
+                    } else {
+                        println!("Receiving file {} - {} bytes", meta.name, meta.size);
+                    }
 
                     #[cfg(target_os = "android")]
                     if is_content_uri {
                         let storage = app.state::<AndroidStorage>();
                         match storage.open_writer(save_dir.clone(), meta.name.clone()) {
-                            Ok(handle) => {
+                            Ok((handle, uri)) => {
                                 writer_handle = Some(handle);
-                                println!("Receiving file via SAF: {}", meta.name);
+                                document_uri = Some(uri);
                                 let _ = window.emit("file-receiving", &meta.name);
                             }
                             Err(e) => {
@@ -342,8 +559,6 @@ async fn handle_websocket_connection(
                     match File::create(&full_path).await {
                         Ok(f) => {
                             file = Some(f);
-                            println!("Receiving file: {}", full_path.display());
-                            // 
                             let _ = window.emit("file-receiving", &meta.name);
                         }
                         Err(e) => {
@@ -353,6 +568,17 @@ async fn handle_websocket_connection(
                 }
             }
             Message::Binary(data) => {
+                // Check if receiving was cancelled
+                if CANCEL_RECEIVING.load(Ordering::SeqCst) {
+                    println!("File receiving cancelled by user");
+                    // 立即发送 Close(4001) 通知发送端，此时连接仍然存活
+                    let _ = write.send(Message::Close(Some(CloseFrame {
+                        code: 4001u16.into(),
+                        reason: "Cancelled by receiver".into(),
+                    }))).await;
+                    break;
+                }
+
                 #[cfg(target_os = "android")]
                 if is_content_uri {
                     if let Some(handle) = writer_handle {
@@ -362,6 +588,22 @@ async fn handle_websocket_connection(
                         if let Err(e) = storage.write_chunk(handle, encoded) {
                             eprintln!("Failed to write chunk via SAF: {}", e);
                         }
+
+                        // Emit progress for Android SAF
+                        if let Some(total) = total_bytes {
+                            let should_emit = bytes_received - last_progress_emit >= PROGRESS_INTERVAL
+                                           || bytes_received >= total;
+                            if should_emit {
+                                let percentage = (bytes_received as f64 / total as f64) * 100.0;
+                                let _ = window.emit("file-transfer-progress", FileProgress {
+                                    file_name: file_name.clone().unwrap_or_default(),
+                                    bytes_received,
+                                    total_bytes: total,
+                                    percentage,
+                                });
+                                last_progress_emit = bytes_received;
+                            }
+                        }
                         continue;
                     }
                 }
@@ -370,6 +612,22 @@ async fn handle_websocket_connection(
                     bytes_received += data.len() as u64;
                     if let Err(e) = f.write_all(&data).await {
                         eprintln!("Failed to write to file: {}", e);
+                    }
+
+                    // Emit progress for regular file write
+                    if let Some(total) = total_bytes {
+                        let should_emit = bytes_received - last_progress_emit >= PROGRESS_INTERVAL
+                                       || bytes_received >= total;
+                        if should_emit {
+                            let percentage = (bytes_received as f64 / total as f64) * 100.0;
+                            let _ = window.emit("file-transfer-progress", FileProgress {
+                                file_name: file_name.clone().unwrap_or_default(),
+                                bytes_received,
+                                total_bytes: total,
+                                percentage,
+                            });
+                            last_progress_emit = bytes_received;
+                        }
                     }
                 }
             }
@@ -381,7 +639,64 @@ async fn handle_websocket_connection(
         }
     }
 
-    // 关闭 SAF writer
+    // 检查文件是否完整接收
+    let was_cancelled = CANCEL_RECEIVING.load(Ordering::SeqCst);
+    CANCEL_RECEIVING.store(false, Ordering::SeqCst);
+
+    let transfer_complete = if was_cancelled {
+        false // 用户主动取消，即使数据已全部接收也视为未完成
+    } else if let Some(expected_size) = total_bytes {
+        bytes_received >= expected_size
+    } else {
+        true // 旧协议没有size字段，假设完整
+    };
+
+    if !transfer_complete {
+        println!("Transfer incomplete: received {} of {} bytes",
+                 bytes_received, total_bytes.unwrap_or(0));
+
+        // 通知发送端：接收方已取消（Close code 4001）
+        let _ = write.send(Message::Close(Some(CloseFrame {
+            code: 4001u16.into(),
+            reason: "Cancelled by receiver".into(),
+        }))).await;
+
+        // Android: 关闭并删除不完整的 SAF 文件
+        #[cfg(target_os = "android")]
+        if let Some(_handle) = writer_handle {
+            let storage = app.state::<AndroidStorage>();
+            if let Some(uri) = &document_uri {
+                // delete_document will close the output stream and delete the file
+                if let Err(e) = storage.delete_document(uri.clone()) {
+                    eprintln!("Failed to delete incomplete SAF file: {}", e);
+                } else {
+                    println!("Deleted incomplete SAF file");
+                }
+            } else {
+                let _ = storage.close_writer(_handle);
+            }
+        }
+
+        // 桌面端：删除不完整的文件
+        if let Some(f) = file {
+            drop(f); // 关闭文件
+            if let Some(name) = &file_name {
+                let mut path = PathBuf::from(&save_dir);
+                path.push(name);
+                let _ = tokio::fs::remove_file(path).await;
+                println!("Removed incomplete file: {}", name);
+            }
+        }
+
+        // 通知前端传输取消
+        if let Some(name) = file_name {
+            let _ = window.emit("file-receive-cancelled", name);
+        }
+
+        return Ok(());
+    }
+
+    // 传输完整，正常关闭
     #[cfg(target_os = "android")]
     if let Some(handle) = writer_handle {
         let storage = app.state::<AndroidStorage>();

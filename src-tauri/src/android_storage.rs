@@ -18,6 +18,35 @@ struct PickFolderResponse {
     uri: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct PickMultipleFilesResponse {
+    uris: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct UriPayload {
+    uri: String,
+}
+
+#[derive(Deserialize)]
+struct FileInfoResponse {
+    name: String,
+    size: u64,
+}
+
+#[derive(Serialize)]
+struct ReadUriChunkPayload {
+    uri: String,
+    offset: u64,
+    size: i32,
+}
+
+#[derive(Deserialize)]
+struct ReadUriChunkResponse {
+    data: String,
+    bytes_read: i32,
+}
+
 #[derive(Serialize)]
 struct OpenWriterPayload {
     tree_uri: String,
@@ -27,6 +56,7 @@ struct OpenWriterPayload {
 #[derive(Deserialize)]
 struct OpenWriterResponse {
     handle: i64,
+    document_uri: String,
 }
 
 #[derive(Serialize)]
@@ -47,6 +77,16 @@ struct CloseWriterPayload {
 
 #[derive(Deserialize)]
 struct CloseWriterResponse {
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct DeleteDocumentPayload {
+    document_uri: String,
+}
+
+#[derive(Deserialize)]
+struct DeleteDocumentResponse {
     ok: bool,
 }
 
@@ -83,7 +123,51 @@ impl AndroidStorage {
         Err("pickFolder is only supported on Android".to_string())
     }
 
-    pub fn open_writer(&self, tree_uri: String, file_name: String) -> Result<i64, String> {
+    pub fn pick_multiple_files(&self) -> Result<Vec<String>, String> {
+        #[cfg(target_os = "android")]
+        {
+            let res = self
+                .0
+                .run_mobile_plugin::<PickMultipleFilesResponse>("pickMultipleFiles", EmptyPayload {});
+            return res
+                .map(|r| r.uris)
+                .map_err(|e| format!("pickMultipleFiles failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("pickMultipleFiles is only supported on Android".to_string())
+    }
+
+    pub fn get_file_info(&self, uri: String) -> Result<(String, u64), String> {
+        #[cfg(target_os = "android")]
+        {
+            let payload = UriPayload { uri };
+            let res = self
+                .0
+                .run_mobile_plugin::<FileInfoResponse>("getFileInfo", payload);
+            return res
+                .map(|r| (r.name, r.size))
+                .map_err(|e| format!("getFileInfo failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("getFileInfo is only supported on Android".to_string())
+    }
+
+    pub fn read_uri_chunk(&self, uri: String, offset: u64, size: i32) -> Result<(String, i32), String> {
+        #[cfg(target_os = "android")]
+        {
+            let payload = ReadUriChunkPayload { uri, offset, size };
+            let res = self
+                .0
+                .run_mobile_plugin::<ReadUriChunkResponse>("readUriChunk", payload);
+            return res
+                .map(|r| (r.data, r.bytes_read))
+                .map_err(|e| format!("readUriChunk failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("readUriChunk is only supported on Android".to_string())
+    }
+
+    pub fn open_writer(&self, tree_uri: String, file_name: String) -> Result<(i64, String), String> {
         #[cfg(target_os = "android")]
         {
             let payload = OpenWriterPayload { tree_uri, file_name };
@@ -91,7 +175,7 @@ impl AndroidStorage {
                 .0
                 .run_mobile_plugin::<OpenWriterResponse>("openWriter", payload);
             return res
-                .map(|r| r.handle)
+                .map(|r| (r.handle, r.document_uri))
                 .map_err(|e| format!("openWriter failed: {e}"));
         }
         #[allow(unreachable_code)]
@@ -130,5 +214,22 @@ impl AndroidStorage {
         }
         #[allow(unreachable_code)]
         Err("closeWriter is only supported on Android".to_string())
+    }
+
+    pub fn delete_document(&self, document_uri: String) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        {
+            let payload = DeleteDocumentPayload { document_uri };
+            let res = self
+                .0
+                .run_mobile_plugin::<DeleteDocumentResponse>("deleteDocument", payload);
+            return res
+                .map(|r| {
+                    let _ = r.ok;
+                })
+                .map_err(|e| format!("deleteDocument failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("deleteDocument is only supported on Android".to_string())
     }
 }

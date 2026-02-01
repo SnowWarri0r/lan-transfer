@@ -82,6 +82,10 @@ listen<Device[]>('devices-updated', (event) => {
 - `network/transfer.rs` - File transfer network logic:
   - `start_discovery()` - UDP multicast device discovery
   - `start_websocket_server()` - File receiving server (supports both file path and SAF content:// URI)
+  - `send_files_android()` - Android-only: send multiple files from content:// URIs with progress tracking
+  - `cancel_file_sending()` - Set global cancel flag to abort ongoing sender transfers
+  - `cancel_file_receiving()` - Set global cancel flag to abort ongoing receiver transfers
+  - `pick_multiple_files()` - Android-only: launch native file picker, returns content:// URIs
   - `get_local_ip()` - Get local network IP
   - `get_download_dir()` - Get system download directory
   - `select_folder()` - Native folder picker dialog (desktop: tauri-plugin-dialog, Android: SAF)
@@ -94,15 +98,22 @@ listen<Device[]>('devices-updated', (event) => {
   - `disconnect_all_chats()` - Close all active connections
 - `android_storage.rs` - Android Storage Access Framework (SAF) plugin bridge:
   - Rust-side plugin that communicates with Kotlin `StoragePlugin` via `run_mobile_plugin`
-  - Methods: `pick_folder()`, `open_writer()`, `write_chunk()`, `close_writer()`
+  - Writing methods: `pick_folder()`, `open_writer()`, `write_chunk()`, `close_writer()`, `delete_document()`
+  - Reading methods: `pick_multiple_files()`, `get_file_info()`, `read_uri_chunk()`
 
 **Android Plugin (`src-tauri/gen/android/app/src/main/java/`)**
 - `app/tauri/storage/StoragePlugin.kt` - Kotlin-side SAF implementation:
   - `pickFolder` - Launches `ACTION_OPEN_DOCUMENT_TREE` via `registerForActivityResult`, returns `content://` URI
-  - `openWriter` - Creates file via `DocumentsContract.createDocument`, returns handle
+  - `pickMultipleFiles` - Launches `ACTION_OPEN_DOCUMENT` with `EXTRA_ALLOW_MULTIPLE`, returns array of `content://` URIs
+  - `getFileInfo` - Queries file name and size from content URI
+  - `readUriChunk` - Reads file chunk from content URI, returns base64-encoded data
+  - `openWriter` - Creates file via `DocumentsContract.createDocument`, returns handle + document URI
   - `writeChunk` - Writes base64-encoded data to the OutputStream for a given handle
   - `closeWriter` - Flushes and closes the OutputStream
+  - `deleteDocument` - Deletes a document by URI via `DocumentsContract.deleteDocument` (used for incomplete transfer cleanup)
 - `com/tauri_app/app/MainActivity.kt` - Acquires `WifiManager.MulticastLock` for UDP multicast discovery
+
+**Important:** Use `ACTION_OPEN_DOCUMENT` instead of `ACTION_GET_CONTENT` for multi-select - better device compatibility and doesn't require persistable permissions.
 
 ## Device Discovery (UDP Multicast)
 
@@ -139,9 +150,34 @@ socket.join_multicast_v4(&Ipv4Addr::new(239, 255, 77, 88), &Ipv4Addr::UNSPECIFIE
 - **Port:** 7878 (TCP/WebSocket)
 - **Flow:**
   1. Sender connects to `ws://{receiver_ip}:7878`
-  2. Sends JSON: `{"name": "filename.ext"}`
+  2. Sends JSON metadata: `{"name": "filename.ext", "size": 1048576, "index": 0, "total": 3}`
   3. Sends binary data (file contents)
   4. Closes connection
+  5. Repeat for next file (serial transfer)
+
+### Protocol Extensions
+
+**Multi-File Transfer (v2):**
+- Added `size: u64` field for progress tracking
+- Added `index: u32` and `total: u32` for queue position
+- All fields use `#[serde(default)]` for backward compatibility
+- Files are sent serially (one after another) to avoid network congestion
+
+**Progress Tracking:**
+- Backend emits `file-transfer-progress` event every 100KB or 10% progress
+- Event payload: `{file_name, bytes_received, total_bytes, percentage}`
+- Frontend displays progress bars on both sender and receiver sides
+
+**Cancellation (Bidirectional):**
+- **Sender cancel:** Sender can cancel at any time via cancel flag (desktop) or Rust command (Android). Sends WebSocket Close to receiver.
+- **Receiver cancel:** Receiver can cancel via `cancel_file_receiving()` command. Sets `CANCEL_RECEIVING` AtomicBool flag checked in Binary message handler.
+- **Close code 4001:** Receiver sends `Close(4001)` to notify sender that receiver cancelled. Sender detects this via `onclose` event (desktop) or `read.next()` after write error (Android).
+- **Incomplete file cleanup:**
+  - Desktop: Auto-deletes incomplete files via `tokio::fs::remove_file`
+  - Android SAF: Deletes incomplete files via `DocumentsContract.deleteDocument` (through `delete_document()` plugin method)
+- **Frontend notifications:**
+  - Sender receives "Cancelled by receiver" error → shows "对方已取消接收" (with Broken pipe fallback)
+  - Receiver receives `file-receive-cancelled` event → shows amber notification bar (auto-dismiss 3s)
 
 ### Sender (Frontend - Browser WebSocket)
 ```typescript
@@ -158,8 +194,37 @@ socket.onopen = () => {
 // Listens on 0.0.0.0:7878
 // On Text message: parse JSON, create file
 // On Binary message: write to file
-// On Close: emit "file-received" event
+// On Close: check if transfer complete (bytes_received == total_bytes)
+//   - Complete: emit "file-received" event
+//   - Incomplete: delete file (desktop), emit "file-receive-cancelled"
 ```
+
+### Multi-File Transfer Implementation
+
+**Desktop (Frontend WebSocket):**
+- User selects files via HTML input (multiple) or drag-and-drop
+- Files stored in `FileQueueItem[]` state with status tracking
+- Serial transfer: `sendFiles()` loops through queue, calls `sendSingleFile()` for each
+- Cancel flag stored in `cancelSendingRef` (useRef to avoid closure issues)
+- Progress updated in `updateFileProgress()` every 100ms during file stream read
+- Cancel button in overall progress bar, delete button for pending files
+
+**Android (Rust Backend):**
+- User taps device "Send" button → launches `pickMultipleFiles()` native picker
+- Returns `content://` URIs → passed to `send_files_android()` Rust command
+- Rust reads files via `read_uri_chunk()` (256KB chunks, base64 encoded)
+- Progress emitted via `file-transfer-progress` event
+- Global `CANCEL_SENDING` AtomicBool flag for cancellation
+- On cancel: sends Close message, resets flag, returns error
+
+**Key Differences:**
+| Aspect | Desktop | Android |
+|--------|---------|---------|
+| File Selection | HTML input / drag-drop | Native `ACTION_OPEN_DOCUMENT` |
+| File Access | Direct File API | SAF content:// URIs |
+| Transfer Logic | Frontend (sendSingleFile) | Backend (send_files_android) |
+| Progress Tracking | Frontend updateFileProgress | Backend emit events |
+| Cancellation | cancelSendingRef (React) | CANCEL_SENDING (Rust) |
 
 ## Chat (WebSocket Bidirectional Messaging)
 
@@ -445,6 +510,30 @@ static CURRENT_SAVE_DIR: Mutex<String> = Mutex::new(String::new());
 - File transfer uses browser WebSocket (frontend), not Rust (simpler, works cross-platform)
 - Chat uses Rust WebSocket server for bidirectional communication (tokio-tungstenite)
 - Android file writing uses SAF (content:// URIs) via base64-encoded chunks through the plugin bridge
+- Android file reading uses SAF with `read_uri_chunk()` for sending (256KB chunks)
 - Android requires `MulticastLock` for UDP multicast (acquired in `MainActivity.kt`)
 - Desktop warnings about unused Android-specific code are expected and harmless
 - Chat messages are not persisted - cleared on app close/refresh
+
+### Multi-File Transfer & Progress
+
+- **Multi-file support:** Desktop uses HTML input multiple + drag-drop, Android uses native `ACTION_OPEN_DOCUMENT` with `EXTRA_ALLOW_MULTIPLE`
+- **Serial transfer:** Files sent one by one to avoid network congestion and simplify implementation
+- **Progress bars:** Real-time progress on both sender (green) and receiver (blue) sides
+- **Cancellation:** Cancel button in progress bar, cancels current file and stops queue
+- **Auto-cleanup:** Incomplete files automatically deleted on desktop (receiver checks `bytes_received == total_bytes`)
+- **File queue UI:** Shows all selected files with individual status (pending/sending/completed/failed)
+- **Delete from queue:** Trash icon on pending files allows removal before sending
+- **Protocol backward compatible:** Old clients ignore new `size`, `index`, `total` fields (via `#[serde(default)]`)
+
+### Receiver Cancel & Transfer Notification (Latest Update)
+
+- **Receiver cancel:** Receiver can cancel ongoing file transfer via cancel button in progress bar
+- **Bidirectional cancel notification:** Both sender and receiver are notified when the other side cancels
+  - Receiver cancel → sends Close(4001) → sender shows "对方已取消接收"
+  - Sender cancel → receiver shows amber notification "传输已取消: filename" (auto-dismiss 3s)
+- **Android SAF file deletion:** Incomplete files on Android are properly deleted via `DocumentsContract.deleteDocument` instead of just closing the writer
+- **`open_writer()` returns document URI:** `OpenWriterResponse` now includes `document_uri` field alongside `handle`, stored in `documentUris` HashMap in Kotlin plugin
+- **Android default save directory:** Changed from app-internal directory to `/storage/emulated/0/Download`
+- **Broken pipe handling:** Android sender detects receiver cancel by reading Close(4001) from buffer after write error, with frontend fallback for "Broken pipe" / "Connection reset"
+- **Simplified send UI:** Merged overall progress bar and "Sending to IP" status into one section, removed redundant status bar during desktop multi-file sending

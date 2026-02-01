@@ -25,6 +25,11 @@ Select a file, pick a device, and send — no cloud, no account, no internet req
 - **Cross-Platform** — Windows, macOS, Linux desktop + Android
 - **Auto Discovery** — Devices find each other automatically via UDP multicast
 - **Real-Time Chat** — Text messaging between devices with auto-reconnect
+- **Multi-File Transfer** — Send multiple files in one batch with queue management
+- **Progress Tracking** — Real-time progress bars on both sender and receiver sides
+- **Cancellable Transfers** — Both sender and receiver can cancel anytime, with cross-device notification and auto-cleanup
+- **Drag & Drop** — Drag files directly to the app (desktop)
+- **Android Multi-Select** — Native file picker with multi-select support
 - **No Setup** — No server, no registration, just open and go
 - **Large File Support** — Streaming transfer with backpressure, handles files of any size
 - **Android SAF** — Full Storage Access Framework support for modern Android scoped storage
