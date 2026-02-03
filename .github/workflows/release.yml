@@ -99,12 +99,23 @@ jobs:
       - name: Build Android APK (universal)
         run: yarn tauri android build --apk
 
+      - name: List APK outputs
+        run: |
+          echo "=== All APK files ==="
+          find src-tauri/gen/android/app/build/outputs -name "*.apk" -type f
+          echo "=== Directory structure ==="
+          ls -la src-tauri/gen/android/app/build/outputs/apk/ || true
+          ls -la src-tauri/gen/android/app/build/outputs/apk/*/ || true
+          ls -la src-tauri/gen/android/app/build/outputs/apk/*/*/ || true
+
       - name: Upload APK to release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
           name: 'LAN Transfer ${{ inputs.tag || github.ref_name }}'
           draft: false
-          files: src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+          files: |
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
