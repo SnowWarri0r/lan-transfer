@@ -1,8 +1,12 @@
 package app.tauri.storage
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
@@ -54,6 +58,11 @@ internal class ReadUriChunkArgs {
     lateinit var uri: String
     var offset: Long = 0
     var size: Int = 0
+}
+
+@InvokeArg
+internal class SetClipboardArgs {
+    lateinit var content: String
 }
 
 @TauriPlugin
@@ -331,6 +340,62 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
             } ?: invoke.reject("Failed to open input stream")
         } catch (e: Exception) {
             invoke.reject("Error reading URI chunk: ${e.message}")
+        }
+    }
+
+    @Command
+    fun getClipboard(invoke: Invoke) {
+        try {
+            val clipboardManager = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = clipboardManager.primaryClip
+
+            val text = if (clip != null && clip.itemCount > 0) {
+                clip.getItemAt(0).coerceToText(activity).toString()
+            } else {
+                ""
+            }
+
+            val ret = JSObject()
+            ret.put("content", text)
+            invoke.resolve(ret)
+        } catch (e: Exception) {
+            invoke.reject("Failed to get clipboard: ${e.message}")
+        }
+    }
+
+    @Command
+    fun setClipboard(invoke: Invoke) {
+        try {
+            val args = invoke.parseArgs(SetClipboardArgs::class.java)
+            val clipboardManager = activity.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("text", args.content)
+            clipboardManager.setPrimaryClip(clip)
+
+            val ret = JSObject()
+            ret.put("ok", true)
+            invoke.resolve(ret)
+        } catch (e: Exception) {
+            invoke.reject("Failed to set clipboard: ${e.message}")
+        }
+    }
+
+    @Command
+    fun getDeviceName(invoke: Invoke) {
+        try {
+            val manufacturer = Build.MANUFACTURER
+            val model = Build.MODEL
+            val deviceName = if (model.startsWith(manufacturer, ignoreCase = true)) {
+                model
+            } else {
+                "$manufacturer $model"
+            }
+            val ret = JSObject()
+            ret.put("name", deviceName)
+            invoke.resolve(ret)
+        } catch (e: Exception) {
+            val ret = JSObject()
+            ret.put("name", "Android")
+            invoke.resolve(ret)
         }
     }
 }

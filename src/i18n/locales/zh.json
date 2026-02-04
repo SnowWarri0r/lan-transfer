@@ -18,6 +18,8 @@
     "receiveDesc": "监听端口接收其他设备的文件",
     "chat": "聊天模式",
     "chatDesc": "与其他设备实时文字聊天",
+    "clipboard": "剪贴板同步",
+    "clipboardDesc": "跨设备同步剪贴板内容",
     "switchMode": "切换模式"
   },
   "send": {
@@ -96,5 +98,30 @@
     "disconnectFailed": "断开连接失败:",
     "stopChatFailed": "停止聊天服务失败:",
     "copyFailed": "复制失败:"
+  },
+  "clipboard": {
+    "title": "剪贴板同步",
+    "serverStarted": "同步服务已启动（端口 7880）",
+    "currentClipboard": "当前剪贴板",
+    "emptyClipboard": "剪贴板为空",
+    "manualSync": "手动同步",
+    "autoSync": "自动同步",
+    "autoSyncOn": "开",
+    "autoSyncOff": "关",
+    "connectedDevices": "已连接设备",
+    "availableDevices": "可用设备",
+    "syncHistory": "同步历史",
+    "localDevice": "本机",
+    "noHistory": "暂无同步记录",
+    "connect": "连接",
+    "disconnect": "断开",
+    "hint": "确保对方设备也在剪贴板同步模式",
+    "searching": "正在搜索设备...",
+    "connectionFailed": "连接失败: ",
+    "syncSuccess": "同步成功",
+    "syncFailed": "同步失败: ",
+    "textTooLong": "文本过长，仅显示前100字符",
+    "characters": "字符",
+    "copy": "复制"
   }
 }

@@ -72,17 +72,34 @@ pub fn cancel_file_receiving() {
 
 #[tauri::command]
 /// 启动设备发现服务
-pub fn start_discovery(window: Window) {
+pub fn start_discovery(window: Window, app: tauri::AppHandle) {
     // 防止重复启动
     if DISCOVERY_RUNNING.swap(true, Ordering::SeqCst) {
         println!("Discovery service already running");
         return;
     }
 
+    // Get device name before spawning thread
+    #[cfg(target_os = "android")]
+    let device_name = {
+        use tauri::Manager;
+        app.state::<crate::android_storage::AndroidStorage>()
+            .get_device_name()
+            .unwrap_or_else(|_| "Android".to_string())
+    };
+    #[cfg(not(target_os = "android"))]
+    let device_name = {
+        let _ = app;
+        hostname::get()
+            .unwrap_or_else(|_| "Unknown".into())
+            .to_string_lossy()
+            .to_string()
+    };
+
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            if let Err(e) = run_discovery_service(window).await {
+            if let Err(e) = run_discovery_service(window, device_name).await {
                 eprintln!("Discovery service error: {}", e);
                 DISCOVERY_RUNNING.store(false, Ordering::SeqCst);
             }
@@ -90,22 +107,9 @@ pub fn start_discovery(window: Window) {
     });
 }
 
-async fn run_discovery_service(window: Window) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_discovery_service(window: Window, hostname: String) -> Result<(), Box<dyn std::error::Error>> {
     let devices: DeviceList = Arc::new(Mutex::new(HashMap::new()));
     let local_ip = get_local_ip()?;
-    let hostname = {
-        #[cfg(not(target_os = "android"))]
-        {
-            hostname::get()
-                .unwrap_or_else(|_| "Unknown".into())
-                .to_string_lossy()
-                .to_string()
-        }
-        #[cfg(target_os = "android")]
-        {
-            "Android".to_string()
-        }
-    };
 
     // 生成唯一实例 ID（用进程 ID�?
     let instance_id = std::process::id().to_string();

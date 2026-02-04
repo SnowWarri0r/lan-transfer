@@ -8,11 +8,13 @@ pub fn run() {
     use tokio::sync::Mutex;
 
     let chat_connections: network::chat::ChatConnections = Arc::new(Mutex::new(HashMap::new()));
+    let clipboard_connections: network::clipboard::ClipboardConnections = Arc::new(Mutex::new(HashMap::new()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(android_storage::init())
         .manage(chat_connections)
+        .manage(clipboard_connections)
         .invoke_handler(tauri::generate_handler![
             network::transfer::start_websocket_server,
             network::transfer::select_folder,
@@ -29,6 +31,16 @@ pub fn run() {
             network::chat::disconnect_chat,
             network::chat::stop_chat_server,
             network::chat::disconnect_all_chats,
+            network::clipboard::start_clipboard_server,
+            network::clipboard::stop_clipboard_server,
+            network::clipboard::connect_to_clipboard,
+            network::clipboard::disconnect_clipboard,
+            network::clipboard::disconnect_all_clipboards,
+            network::clipboard::start_clipboard_polling,
+            network::clipboard::stop_clipboard_polling,
+            network::clipboard::send_clipboard_content,
+            network::clipboard::get_system_clipboard,
+            network::clipboard::set_system_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Tauri v2 application for LAN file transfer and real-time chat with a React + TypeScript frontend and Rust backend. The app allows users to send and receive files over a local network using UDP multicast discovery and WebSocket transfer, plus bidirectional text messaging via WebSocket chat.
+This is a Tauri v2 application for LAN file transfer, real-time chat, and clipboard sync with a React + TypeScript frontend and Rust backend. The app allows users to send and receive files over a local network using UDP multicast discovery and WebSocket transfer, bidirectional text messaging via WebSocket chat, and cross-device clipboard synchronization.
 
 ## Development Commands
 
@@ -73,7 +73,7 @@ listen<Device[]>('devices-updated', (event) => {
 ### Key Components
 
 **Frontend (`src/`)**
-- `App.tsx` - Main UI with mode selection (send/receive/chat), device list, file transfer, chat interface
+- `App.tsx` - Main UI with mode selection (send/receive/chat/clipboard), device list, file transfer, chat interface, clipboard sync
 - `index.css` - Tailwind CSS 4 entry point
 - Uses browser's native WebSocket API for sending files (file transfer mode)
 
@@ -96,10 +96,22 @@ listen<Device[]>('devices-updated', (event) => {
   - `disconnect_chat()` - Close chat connection
   - `stop_chat_server()` - Stop chat server
   - `disconnect_all_chats()` - Close all active connections
+- `network/clipboard.rs` - Clipboard sync network logic:
+  - `start_clipboard_server()` - WebSocket server for clipboard sync (port 7880)
+  - `stop_clipboard_server()` - Stop clipboard server
+  - `connect_to_clipboard()` - Connect to remote clipboard server
+  - `disconnect_clipboard()` - Close clipboard connection
+  - `disconnect_all_clipboards()` - Close all clipboard connections
+  - `start_clipboard_polling()` - Start 500ms polling for clipboard changes
+  - `stop_clipboard_polling()` - Stop clipboard polling
+  - `send_clipboard_content()` - Manually broadcast clipboard to all peers
+  - `get_system_clipboard()` - Read system clipboard (uses arboard on desktop, plugin on Android)
+  - `set_system_clipboard()` - Write to system clipboard
 - `android_storage.rs` - Android Storage Access Framework (SAF) plugin bridge:
   - Rust-side plugin that communicates with Kotlin `StoragePlugin` via `run_mobile_plugin`
   - Writing methods: `pick_folder()`, `open_writer()`, `write_chunk()`, `close_writer()`, `delete_document()`
   - Reading methods: `pick_multiple_files()`, `get_file_info()`, `read_uri_chunk()`
+  - Clipboard methods: `get_clipboard()`, `set_clipboard()`
 
 **Android Plugin (`src-tauri/gen/android/app/src/main/java/`)**
 - `app/tauri/storage/StoragePlugin.kt` - Kotlin-side SAF implementation:
@@ -346,6 +358,63 @@ if (!activeChatIpRef.current) {
 - **No persistence:** Messages stored in React state, cleared on refresh
 - **No typing indicators:** Future enhancement
 - **Android background:** Chat server stops when app backgrounded (Tauri limitation)
+
+## Clipboard Sync (WebSocket)
+
+### Protocol
+- **Port:** 7880 (TCP/WebSocket)
+- **Architecture:** Same dual server/client pattern as chat
+- **Message Format:** JSON-encoded `ClipboardMessage`
+```json
+{
+  "content": "clipboard text",
+  "from_ip": "192.168.1.10",
+  "timestamp": 1706745600000,
+  "hash": "a1b2c3d4e5f6"
+}
+```
+
+### Key Features
+- **Multi-device:** Can connect to multiple devices simultaneously (unlike chat)
+- **Auto-sync:** Optional 500ms polling to detect and broadcast clipboard changes
+- **Manual sync:** Button to immediately sync current clipboard
+- **Anti-echo:** Content hash prevents infinite loops when receiving synced content
+- **History:** Last 50 sync events displayed in UI
+
+### Implementation Details
+
+**Desktop Clipboard Access:**
+- Uses `arboard` crate for cross-platform clipboard access
+- Conditional compilation: `#[cfg(not(target_os = "android"))]`
+
+**Android Clipboard Access:**
+- Uses `ClipboardManager` system service via Kotlin plugin
+- `getClipboard()` - reads primary clip as text
+- `setClipboard()` - sets primary clip with plain text
+
+**Polling Mechanism:**
+```rust
+static CLIPBOARD_POLLING_RUNNING: AtomicBool = AtomicBool::new(false);
+static LAST_CLIPBOARD_HASH: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+// 500ms interval polling
+// Computes content hash, compares with last known hash
+// Broadcasts to all connections if changed
+```
+
+**Anti-Echo Logic:**
+1. When receiving clipboard, update `LAST_CLIPBOARD_HASH` before setting system clipboard
+2. When polling, skip if current hash matches `LAST_CLIPBOARD_HASH`
+3. Prevents received content from being immediately broadcast back
+
+### Events
+| Event | Payload | Description |
+|-------|---------|-------------|
+| clipboard-connected | string (IP) | Device connected |
+| clipboard-disconnected | string (IP) | Device disconnected |
+| clipboard-received | ClipboardMessage | Received clipboard from peer |
+| clipboard-sent | ClipboardMessage | Local clipboard broadcast |
+| clipboard-server-error | string | Server error |
 
 ## Network Ports
 

@@ -109,14 +109,15 @@ jobs:
           ls -la src-tauri/gen/android/app/build/outputs/apk/*/ || true
           ls -la src-tauri/gen/android/app/build/outputs/apk/*/*/ || true
 
+      - name: Wait for release to be available
+        run: sleep 10
+
       - name: Upload APK to release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          name: 'LAN Transfer ${{ inputs.tag || github.ref_name }}'
-          draft: false
           files: |
             src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
-            src-tauri/gen/android/app/build/outputs/apk/*/release/*.apk
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

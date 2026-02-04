@@ -22,6 +22,20 @@ interface ChatMessage {
   is_me?: boolean;
 }
 
+interface ClipboardMessage {
+  content: string;
+  from_ip: string;
+  timestamp: number;
+  hash: string;
+}
+
+interface ClipboardHistoryItem {
+  content: string;
+  from_ip: string;
+  timestamp: number;
+  is_local: boolean;
+}
+
 interface FileQueueItem {
   file: File;
   id: string;
@@ -32,7 +46,7 @@ interface FileQueueItem {
   error?: string;
 }
 
-type Mode = 'select' | 'send' | 'receive' | 'chat';
+type Mode = 'select' | 'send' | 'receive' | 'chat' | 'clipboard';
 type SendStatus = 'idle' | 'sending' | 'success' | 'error';
 
 function formatBytes(bytes: number): string {
@@ -112,6 +126,14 @@ export default function App() {
   const chatConnectedRef = useRef<boolean>(false);
   const activeChatIpRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Clipboard sync state
+  const [clipboardHistory, setClipboardHistory] = useState<ClipboardHistoryItem[]>([]);
+  const [clipboardConnections, setClipboardConnections] = useState<string[]>([]);
+  const [currentClipboard, setCurrentClipboard] = useState<string>('');
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState<boolean>(false);
+  const [clipboardError, setClipboardError] = useState<string | null>(null);
+  const [copiedHistoryIndex, setCopiedHistoryIndex] = useState<number | null>(null);
 
   // 检测是否为 Android 平台
   const [isAndroid, setIsAndroid] = useState<boolean>(false);
@@ -208,6 +230,16 @@ export default function App() {
         });
     } else if (mode === 'chat') {
       invoke('start_chat_server');
+    } else if (mode === 'clipboard') {
+      invoke('start_clipboard_server');
+      // Load current clipboard
+      invoke<string>('get_system_clipboard')
+        .then(content => setCurrentClipboard(content))
+        .catch(() => setCurrentClipboard(''));
+      // Auto-start polling
+      invoke('start_clipboard_polling').then(() => {
+        setAutoSyncEnabled(true);
+      }).catch(() => {});
     }
   }, [mode]);
 
@@ -283,6 +315,62 @@ export default function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
+
+  // Clipboard event listeners
+  useEffect(() => {
+    const unlistenConnected = listen<string>('clipboard-connected', (event) => {
+      const peerIp = event.payload;
+      setClipboardConnections(prev => {
+        if (!prev.includes(peerIp)) {
+          return [...prev, peerIp];
+        }
+        return prev;
+      });
+    });
+
+    const unlistenDisconnected = listen<string>('clipboard-disconnected', (event) => {
+      const peerIp = event.payload;
+      setClipboardConnections(prev => prev.filter(ip => ip !== peerIp));
+    });
+
+    const unlistenReceived = listen<ClipboardMessage>('clipboard-received', (event) => {
+      const msg = event.payload;
+      // Update current clipboard display
+      setCurrentClipboard(msg.content);
+      // Add to history
+      setClipboardHistory(prev => [{
+        content: msg.content,
+        from_ip: msg.from_ip,
+        timestamp: msg.timestamp,
+        is_local: false
+      }, ...prev].slice(0, 50)); // Keep last 50 items
+      // On Android, also set the system clipboard
+      invoke('set_system_clipboard', { content: msg.content }).catch(() => {});
+    });
+
+    const unlistenSent = listen<ClipboardMessage>('clipboard-sent', (event) => {
+      const msg = event.payload;
+      // Add to history as local
+      setClipboardHistory(prev => [{
+        content: msg.content,
+        from_ip: msg.from_ip,
+        timestamp: msg.timestamp,
+        is_local: true
+      }, ...prev].slice(0, 50));
+    });
+
+    const unlistenError = listen<string>('clipboard-server-error', (event) => {
+      setClipboardError(event.payload);
+    });
+
+    return () => {
+      unlistenConnected.then(fn => fn());
+      unlistenDisconnected.then(fn => fn());
+      unlistenReceived.then(fn => fn());
+      unlistenSent.then(fn => fn());
+      unlistenError.then(fn => fn());
+    };
+  }, []);
 
   const handlePickFolder = async () => {
     try {
@@ -661,6 +749,76 @@ export default function App() {
     }
   };
 
+  // Clipboard handlers
+  const handleConnectClipboard = async (device: Device) => {
+    setClipboardError(null);
+    try {
+      await invoke('connect_to_clipboard', { targetIp: device.ip });
+    } catch (err) {
+      setClipboardError(t('clipboard.connectionFailed') + err);
+    }
+  };
+
+  const handleDisconnectClipboard = async (ip: string) => {
+    try {
+      await invoke('disconnect_clipboard', { targetIp: ip });
+    } catch (err) {
+      console.error('Disconnect clipboard failed:', err);
+    }
+  };
+
+  const handleManualSync = async () => {
+    try {
+      await invoke('send_clipboard_content');
+      // Refresh current clipboard
+      const content = await invoke<string>('get_system_clipboard');
+      setCurrentClipboard(content);
+    } catch (err) {
+      setClipboardError(t('clipboard.syncFailed') + err);
+    }
+  };
+
+  const handleToggleAutoSync = async () => {
+    if (autoSyncEnabled) {
+      await invoke('stop_clipboard_polling');
+      setAutoSyncEnabled(false);
+    } else {
+      await invoke('start_clipboard_polling');
+      setAutoSyncEnabled(true);
+    }
+  };
+
+  const handleLeaveClipboardMode = async () => {
+    try {
+      await invoke('stop_clipboard_polling');
+      await invoke('disconnect_all_clipboards');
+      await invoke('stop_clipboard_server');
+    } catch (err) {
+      console.error('Stop clipboard service failed:', err);
+    }
+    setClipboardConnections([]);
+    setClipboardHistory([]);
+    setAutoSyncEnabled(false);
+  };
+
+  const handleCopyHistoryItem = async (content: string, index: number) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      // Also set via invoke for consistency
+      await invoke('set_system_clipboard', { content });
+      setCurrentClipboard(content);
+      setCopiedHistoryIndex(index);
+      setTimeout(() => setCopiedHistoryIndex(null), 1500);
+    } catch (err) {
+      console.error(t('error.copyFailed'), err);
+    }
+  };
+
+  const truncateText = (text: string, maxLength: number = 100) => {
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
+  };
+
   // 模式选择界面
   if (mode === 'select') {
     return (
@@ -695,6 +853,14 @@ export default function App() {
               <div className="text-xl font-semibold text-purple-600 group-hover:text-purple-700">{t('mode.chat')}</div>
               <div className="text-sm text-slate-500 mt-1">{t('mode.chatDesc')}</div>
             </button>
+
+            <button
+              onClick={() => setMode('clipboard')}
+              className="w-full p-6 bg-white border-2 border-slate-200 rounded-xl hover:border-amber-400 hover:shadow-lg transition-all group"
+            >
+              <div className="text-xl font-semibold text-amber-600 group-hover:text-amber-700">{t('mode.clipboard')}</div>
+              <div className="text-sm text-slate-500 mt-1">{t('mode.clipboardDesc')}</div>
+            </button>
           </div>
 
           <div className="absolute top-4 right-4">
@@ -716,12 +882,14 @@ export default function App() {
         {/* 顶部导航 */}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-slate-800">
-            {mode === 'send' ? t('send.title') : mode === 'receive' ? t('receive.title') : t('chat.title')}
+            {mode === 'send' ? t('send.title') : mode === 'receive' ? t('receive.title') : mode === 'chat' ? t('chat.title') : t('clipboard.title')}
           </h1>
           <button
             onClick={async () => {
               if (mode === 'chat') {
                 await handleLeaveChatMode();
+              } else if (mode === 'clipboard') {
+                await handleLeaveClipboardMode();
               }
               setMode('select');
             }}
@@ -1443,6 +1611,198 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* 剪贴板同步模式 */}
+        {mode === 'clipboard' && (
+          <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4 shadow-sm">
+            {/* 本机信息 */}
+            <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl">
+              <p className="text-sm font-medium text-slate-600">{t('common.localIp')}</p>
+              <p className="text-xl font-mono font-semibold text-amber-600">{localIp}</p>
+              <p className="text-sm text-amber-600 mt-1 flex items-center gap-1">
+                <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse"></span>
+                {t('clipboard.serverStarted')}
+              </p>
+            </div>
+
+            {/* 错误提示 */}
+            {clipboardError && (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-lg flex items-center justify-between">
+                <span className="text-red-700">{clipboardError}</span>
+                <button
+                  onClick={() => setClipboardError(null)}
+                  className="text-red-600 hover:text-red-800 text-xl font-bold"
+                >
+                  &times;
+                </button>
+              </div>
+            )}
+
+            {/* 当前剪贴板 */}
+            <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
+              <label className="block text-sm font-medium text-slate-700 mb-2">{t('clipboard.currentClipboard')}</label>
+              <div className="p-3 bg-white rounded-lg border border-slate-200 min-h-[60px] max-h-[120px] overflow-y-auto">
+                {currentClipboard ? (
+                  <p className="text-sm text-slate-700 break-words whitespace-pre-wrap">
+                    {truncateText(currentClipboard, 500)}
+                    {currentClipboard.length > 500 && (
+                      <span className="text-slate-400 text-xs ml-1">
+                        ({currentClipboard.length} {t('clipboard.characters')})
+                      </span>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-sm text-slate-400 italic">{t('clipboard.emptyClipboard')}</p>
+                )}
+              </div>
+
+              {/* 操作按钮 */}
+              <div className="flex items-center gap-3 mt-3">
+                <button
+                  onClick={handleManualSync}
+                  disabled={clipboardConnections.length === 0 || !currentClipboard}
+                  className={`px-4 py-2 text-sm font-medium rounded-lg transition ${
+                    clipboardConnections.length > 0 && currentClipboard
+                      ? 'bg-amber-500 text-white hover:bg-amber-600'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {t('clipboard.manualSync')}
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-600">{t('clipboard.autoSync')}:</span>
+                  <button
+                    onClick={handleToggleAutoSync}
+                    className={`px-3 py-1 text-sm font-medium rounded-lg transition ${
+                      autoSyncEnabled
+                        ? 'bg-green-500 text-white'
+                        : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
+                    }`}
+                  >
+                    {autoSyncEnabled ? t('clipboard.autoSyncOn') : t('clipboard.autoSyncOff')}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* 已连接设备 */}
+            {clipboardConnections.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  {t('clipboard.connectedDevices')} <span className="text-slate-400">({clipboardConnections.length})</span>
+                </label>
+                <div className="space-y-2">
+                  {clipboardConnections.map((ip) => {
+                    const device = devices.find(d => d.ip === ip);
+                    return (
+                      <div
+                        key={ip}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-3 border border-green-200 bg-green-50 rounded-lg"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></span>
+                          <span className="font-medium text-slate-800 truncate">{device?.hostname || ip}</span>
+                          <span className="text-xs text-slate-500 font-mono flex-shrink-0">({ip})</span>
+                        </div>
+                        <button
+                          onClick={() => handleDisconnectClipboard(ip)}
+                          className="px-3 py-1 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition flex-shrink-0 self-end sm:self-auto"
+                        >
+                          {t('clipboard.disconnect')}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* 可用设备 */}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                {t('clipboard.availableDevices')} <span className="text-slate-400">({devices.filter(d => !clipboardConnections.includes(d.ip)).length})</span>
+              </label>
+              {devices.filter(d => !clipboardConnections.includes(d.ip)).length > 0 ? (
+                <div className="space-y-2 max-h-48 overflow-y-auto">
+                  {devices.filter(d => !clipboardConnections.includes(d.ip)).map((device) => (
+                    <div
+                      key={device.ip}
+                      className="flex items-center justify-between p-3 border border-slate-200 rounded-lg hover:border-amber-300 hover:bg-amber-50 transition"
+                    >
+                      <div>
+                        <p className="font-medium text-slate-800">{device.hostname}</p>
+                        <p className="text-sm text-slate-500 font-mono">{device.ip}</p>
+                      </div>
+                      <button
+                        onClick={() => handleConnectClipboard(device)}
+                        className="px-4 py-2 text-sm font-medium bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition"
+                      >
+                        {t('clipboard.connect')}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-slate-400">
+                  <div className="animate-pulse">{t('clipboard.searching')}</div>
+                  <div className="text-sm mt-2">{t('clipboard.hint')}</div>
+                </div>
+              )}
+            </div>
+
+            {/* 同步历史 */}
+            <div className="pt-4 border-t border-slate-100">
+              <label className="block text-sm font-medium text-slate-700 mb-2">{t('clipboard.syncHistory')}</label>
+              {clipboardHistory.length > 0 ? (
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {clipboardHistory.map((item, idx) => {
+                    const device = devices.find(d => d.ip === item.from_ip);
+                    const displayName = item.is_local
+                      ? t('clipboard.localDevice')
+                      : (device?.hostname || item.from_ip);
+                    return (
+                      <div
+                        key={idx}
+                        className={`p-3 rounded-lg border ${
+                          item.is_local
+                            ? 'bg-amber-50 border-amber-200'
+                            : 'bg-slate-50 border-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <span className="text-xs text-slate-400 flex-shrink-0">{formatTime(item.timestamp)}</span>
+                            <span className={`text-xs font-medium truncate ${item.is_local ? 'text-amber-600' : 'text-slate-600'}`}>
+                              [{displayName}]
+                            </span>
+                          </div>
+                          <button
+                            onClick={() => handleCopyHistoryItem(item.content, idx)}
+                            className={`text-xs transition px-2 py-1 rounded flex-shrink-0 ${
+                              copiedHistoryIndex === idx
+                                ? 'text-green-600 bg-green-50'
+                                : 'text-slate-500 hover:text-slate-700 hover:bg-white'
+                            }`}
+                          >
+                            {copiedHistoryIndex === idx ? `✓ ${t('common.copied')}` : `📋 ${t('clipboard.copy')}`}
+                          </button>
+                        </div>
+                        <p className="text-sm text-slate-700 break-words">
+                          {truncateText(item.content, 100)}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-6 text-slate-400">
+                  {t('clipboard.noHistory')}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

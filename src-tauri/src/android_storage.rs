@@ -90,6 +90,26 @@ struct DeleteDocumentResponse {
     ok: bool,
 }
 
+#[derive(Deserialize)]
+struct GetClipboardResponse {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct GetDeviceNameResponse {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct SetClipboardPayload {
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct SetClipboardResponse {
+    ok: bool,
+}
+
 pub fn init() -> TauriPlugin<Wry> {
     let mut builder = Builder::<Wry>::new("android-storage");
 
@@ -231,5 +251,50 @@ impl AndroidStorage {
         }
         #[allow(unreachable_code)]
         Err("deleteDocument is only supported on Android".to_string())
+    }
+
+    pub fn get_clipboard(&self) -> Result<String, String> {
+        #[cfg(target_os = "android")]
+        {
+            let res = self
+                .0
+                .run_mobile_plugin::<GetClipboardResponse>("getClipboard", EmptyPayload {});
+            return res
+                .map(|r| r.content)
+                .map_err(|e| format!("getClipboard failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("getClipboard is only supported on Android".to_string())
+    }
+
+    pub fn set_clipboard(&self, content: String) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        {
+            let payload = SetClipboardPayload { content };
+            let res = self
+                .0
+                .run_mobile_plugin::<SetClipboardResponse>("setClipboard", payload);
+            return res
+                .map(|r| {
+                    let _ = r.ok;
+                })
+                .map_err(|e| format!("setClipboard failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("setClipboard is only supported on Android".to_string())
+    }
+
+    pub fn get_device_name(&self) -> Result<String, String> {
+        #[cfg(target_os = "android")]
+        {
+            let res = self
+                .0
+                .run_mobile_plugin::<GetDeviceNameResponse>("getDeviceName", EmptyPayload {});
+            return res
+                .map(|r| r.name)
+                .map_err(|e| format!("getDeviceName failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("getDeviceName is only supported on Android".to_string())
     }
 }

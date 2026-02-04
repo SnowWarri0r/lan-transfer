@@ -18,6 +18,8 @@
     "receiveDesc": "Listen for files from other devices",
     "chat": "Chat Mode",
     "chatDesc": "Real-time text chat with other devices",
+    "clipboard": "Clipboard Sync",
+    "clipboardDesc": "Sync clipboard across devices",
     "switchMode": "Switch Mode"
   },
   "send": {
@@ -96,5 +98,30 @@
     "disconnectFailed": "Disconnect failed:",
     "stopChatFailed": "Stop chat server failed:",
     "copyFailed": "Copy failed:"
+  },
+  "clipboard": {
+    "title": "Clipboard Sync",
+    "serverStarted": "Sync service started (port 7880)",
+    "currentClipboard": "Current Clipboard",
+    "emptyClipboard": "Clipboard is empty",
+    "manualSync": "Manual Sync",
+    "autoSync": "Auto Sync",
+    "autoSyncOn": "On",
+    "autoSyncOff": "Off",
+    "connectedDevices": "Connected Devices",
+    "availableDevices": "Available Devices",
+    "syncHistory": "Sync History",
+    "localDevice": "Local",
+    "noHistory": "No sync history yet",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "hint": "Make sure the other device is also in clipboard sync mode",
+    "searching": "Searching for devices...",
+    "connectionFailed": "Connection failed: ",
+    "syncSuccess": "Synced successfully",
+    "syncFailed": "Sync failed: ",
+    "textTooLong": "Text too long, showing first 100 characters",
+    "characters": "characters",
+    "copy": "Copy"
   }
 }

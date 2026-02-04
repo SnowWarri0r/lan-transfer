@@ -4,7 +4,7 @@
 
 # LAN Transfer
 
-**Lightweight cross-platform LAN file transfer app built with Tauri v2**
+**Lightweight cross-platform LAN file transfer & clipboard sync app built with Tauri v2**
 
 [![Stars](https://img.shields.io/github/stars/SnowWarri0r/lan-transfer?style=flat-square&logo=github&color=yellow)](https://github.com/SnowWarri0r/lan-transfer/stargazers)
 [![License](https://img.shields.io/github/license/SnowWarri0r/lan-transfer?style=flat-square&color=blue)](LICENSE)
@@ -25,6 +25,8 @@ Select a file, pick a device, and send — no cloud, no account, no internet req
 - **Cross-Platform** — Windows, macOS, Linux desktop + Android
 - **Auto Discovery** — Devices find each other automatically via UDP multicast
 - **Real-Time Chat** — Text messaging between devices with auto-reconnect
+- **Clipboard Sync** — Auto-sync clipboard content across devices with history tracking
+- **Multi-Language** — Built-in i18n support (English & Chinese)
 - **Multi-File Transfer** — Send multiple files in one batch with queue management
 - **Progress Tracking** — Real-time progress bars on both sender and receiver sides
 - **Cancellable Transfers** — Both sender and receiver can cancel anytime, with cross-device notification and auto-cleanup
@@ -68,6 +70,21 @@ Select a file, pick a device, and send — no cloud, no account, no internet req
 2. Pick a device to chat with (or auto-accept incoming connection)
 3. Send messages in real-time with auto-reconnect
 4. Each device runs both server and client for bidirectional communication
+
+### Clipboard Sync
+
+```
+┌──────────────┐                  ┌──────────────┐
+│   Device A   │  Auto-Sync       │   Device B   │
+│              │◄────────────────►│              │
+│  Clipboard   │   ws://ip:7880   │  Clipboard   │
+└──────────────┘                  └──────────────┘
+```
+
+1. Enter **Clipboard Mode** on all devices
+2. Connect to other devices (supports multiple connections)
+3. Enable auto-sync to broadcast clipboard changes automatically
+4. Or use manual sync button to push current clipboard
 
 ## Screenshots
 
@@ -126,7 +143,8 @@ yarn tauri android build
 
 ```
 src/
-  App.tsx              # React UI — mode selection, device list, file transfer, chat
+  App.tsx              # React UI — mode selection, device list, file transfer, chat, clipboard
+  i18n/                # Internationalization (English & Chinese)
 
 src-tauri/src/
   lib.rs               # Entry point, plugin & command registration
@@ -134,6 +152,7 @@ src-tauri/src/
   network/
     transfer.rs        # Discovery, WebSocket server, file I/O
     chat.rs            # Bidirectional WebSocket chat (dual server/client)
+    clipboard.rs       # Clipboard sync (multi-device, auto-sync with polling)
 
 src-tauri/gen/android/.../
   app/tauri/storage/
@@ -149,6 +168,7 @@ src-tauri/gen/android/.../
 | 37821 | UDP      | Device discovery (multicast 239.255.77.88) |
 | 7878  | TCP/WS   | File transfer |
 | 7879  | TCP/WS   | Chat (bidirectional messaging) |
+| 7880  | TCP/WS   | Clipboard sync |
 
 ## Contributing
 
