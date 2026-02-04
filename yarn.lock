@@ -588,15 +588,10 @@
     postcss "^8.4.41"
     tailwindcss "4.1.18"
 
-"@tauri-apps/api@^2.0.0", "@tauri-apps/api@^2.5.0":
+"@tauri-apps/api@^2.5.0":
   version "2.5.0"
   resolved "https://registry.yarnpkg.com/@tauri-apps/api/-/api-2.5.0.tgz#f1c67b5505ba689621b549f9d0165389337586dc"
   integrity sha512-Ldux4ip+HGAcPUmuLT8EIkk6yafl5vK0P0c0byzAKzxJh7vxelVtdPONjfgTm96PbN24yjZNESY8CKo8qniluA==
-
-"@tauri-apps/api@^2.0.3":
-  version "2.10.1"
-  resolved "https://registry.yarnpkg.com/@tauri-apps/api/-/api-2.10.1.tgz#57c1bae6114ec33d977eb2b50dfefc25fa84fc93"
-  integrity sha512-hKL/jWf293UDSUN09rR69hrToyIXBb8CjGaWC7gfinvnQrBVvnLr08FeFi38gxtugAVyVcTa5/FD/Xnkb1siBw==
 
 "@tauri-apps/api@^2.8.0":
   version "2.9.1"
@@ -681,13 +676,6 @@
   integrity sha512-q4Uq3eY87TdcYzXACiYSPhmpBA76shgmQswGkSVio4C82Sz2W4iehe9TnKYwbq7weHiL88Yw19XZm7v28+Micg==
   dependencies:
     "@tauri-apps/api" "^2.8.0"
-
-"@tauri-apps/plugin-opener@^2":
-  version "2.3.0"
-  resolved "https://registry.yarnpkg.com/@tauri-apps/plugin-opener/-/plugin-opener-2.3.0.tgz#ea883f48daffd22873bbc40cc81b266df6f6a6cd"
-  integrity sha512-yAbauwp8BCHIhhA48NN8rEf6OtfZBPCgTOCa10gmtoVCpmic5Bq+1Ba7C+NZOjogedkSiV7hAotjYnnbUVmYrw==
-  dependencies:
-    "@tauri-apps/api" "^2.0.0"
 
 "@tybys/wasm-util@^0.10.1":
   version "0.10.1"
@@ -1174,13 +1162,6 @@ tapable@^2.2.0:
   version "2.3.0"
   resolved "https://registry.yarnpkg.com/tapable/-/tapable-2.3.0.tgz#7e3ea6d5ca31ba8e078b560f0d83ce9a14aa8be6"
   integrity sha512-g9ljZiwki/LfxmQADO3dEY1CbpmXT5Hm2fJ+QaGKwSXUylMybePR7/67YW7jOrrvjEgL1Fmz5kzyAjWVWLlucg==
-
-tauri-plugin-app-events-api@^0.2.0:
-  version "0.2.0"
-  resolved "https://registry.yarnpkg.com/tauri-plugin-app-events-api/-/tauri-plugin-app-events-api-0.2.0.tgz#7c38afae00b123f9552ae5b6954082a0c294bb54"
-  integrity sha512-CnlAeucWhT+Rgx6CCsqUpq2D3pqgx0fhjSPKomH7O2t1rGVu5kGLMkYvaCX6gqVTUYpIWX5BLV7LGY2DRri0QA==
-  dependencies:
-    "@tauri-apps/api" "^2.0.3"
 
 tinyglobby@^0.2.13:
   version "0.2.14"

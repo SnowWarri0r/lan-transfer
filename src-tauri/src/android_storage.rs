@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use tauri::plugin::{Builder, PluginHandle, TauriPlugin};
 use tauri::Wry;
@@ -186,10 +188,10 @@ impl AndroidStorage {
         Err("pickMultipleFiles is only supported on Android".to_string())
     }
 
-    pub fn get_file_info(&self, uri: String) -> Result<(String, u64), String> {
+    pub fn get_file_info(&self, _uri: String) -> Result<(String, u64), String> {
         #[cfg(target_os = "android")]
         {
-            let payload = UriPayload { uri };
+            let payload = UriPayload { uri: _uri };
             let res = self
                 .0
                 .run_mobile_plugin::<FileInfoResponse>("getFileInfo", payload);
@@ -201,10 +203,10 @@ impl AndroidStorage {
         Err("getFileInfo is only supported on Android".to_string())
     }
 
-    pub fn read_uri_chunk(&self, uri: String, offset: u64, size: i32) -> Result<(String, i32), String> {
+    pub fn read_uri_chunk(&self, _uri: String, _offset: u64, _size: i32) -> Result<(String, i32), String> {
         #[cfg(target_os = "android")]
         {
-            let payload = ReadUriChunkPayload { uri, offset, size };
+            let payload = ReadUriChunkPayload { uri: _uri, offset: _offset, size: _size };
             let res = self
                 .0
                 .run_mobile_plugin::<ReadUriChunkResponse>("readUriChunk", payload);
@@ -216,10 +218,10 @@ impl AndroidStorage {
         Err("readUriChunk is only supported on Android".to_string())
     }
 
-    pub fn open_writer(&self, tree_uri: String, file_name: String) -> Result<(i64, String), String> {
+    pub fn open_writer(&self, _tree_uri: String, _file_name: String) -> Result<(i64, String), String> {
         #[cfg(target_os = "android")]
         {
-            let payload = OpenWriterPayload { tree_uri, file_name };
+            let payload = OpenWriterPayload { tree_uri: _tree_uri, file_name: _file_name };
             let res = self
                 .0
                 .run_mobile_plugin::<OpenWriterResponse>("openWriter", payload);
@@ -231,10 +233,10 @@ impl AndroidStorage {
         Err("openWriter is only supported on Android".to_string())
     }
 
-    pub fn write_chunk(&self, handle: i64, data_base64: String) -> Result<(), String> {
+    pub fn write_chunk(&self, _handle: i64, _data_base64: String) -> Result<(), String> {
         #[cfg(target_os = "android")]
         {
-            let payload = WriteChunkPayload { handle, data_base64 };
+            let payload = WriteChunkPayload { handle: _handle, data_base64: _data_base64 };
             let res = self
                 .0
                 .run_mobile_plugin::<WriteChunkResponse>("writeChunk", payload);
@@ -248,10 +250,10 @@ impl AndroidStorage {
         Err("writeChunk is only supported on Android".to_string())
     }
 
-    pub fn close_writer(&self, handle: i64) -> Result<(), String> {
+    pub fn close_writer(&self, _handle: i64) -> Result<(), String> {
         #[cfg(target_os = "android")]
         {
-            let payload = CloseWriterPayload { handle };
+            let payload = CloseWriterPayload { handle: _handle };
             let res = self
                 .0
                 .run_mobile_plugin::<CloseWriterResponse>("closeWriter", payload);
@@ -265,10 +267,10 @@ impl AndroidStorage {
         Err("closeWriter is only supported on Android".to_string())
     }
 
-    pub fn delete_document(&self, document_uri: String) -> Result<(), String> {
+    pub fn delete_document(&self, _document_uri: String) -> Result<(), String> {
         #[cfg(target_os = "android")]
         {
-            let payload = DeleteDocumentPayload { document_uri };
+            let payload = DeleteDocumentPayload { document_uri: _document_uri };
             let res = self
                 .0
                 .run_mobile_plugin::<DeleteDocumentResponse>("deleteDocument", payload);
@@ -282,10 +284,10 @@ impl AndroidStorage {
         Err("deleteDocument is only supported on Android".to_string())
     }
 
-    pub fn find_or_create_subdirectory(&self, tree_uri: String, relative_path: String) -> Result<String, String> {
+    pub fn find_or_create_subdirectory(&self, _tree_uri: String, _relative_path: String) -> Result<String, String> {
         #[cfg(target_os = "android")]
         {
-            let payload = FindOrCreateSubdirectoryPayload { tree_uri, relative_path };
+            let payload = FindOrCreateSubdirectoryPayload { tree_uri: _tree_uri, relative_path: _relative_path };
             let res = self
                 .0
                 .run_mobile_plugin::<FindOrCreateSubdirectoryResponse>("findOrCreateSubdirectory", payload);
@@ -297,10 +299,10 @@ impl AndroidStorage {
         Err("findOrCreateSubdirectory is only supported on Android".to_string())
     }
 
-    pub fn list_folder_contents(&self, tree_uri: String) -> Result<Vec<FolderFileInfo>, String> {
+    pub fn list_folder_contents(&self, _tree_uri: String) -> Result<Vec<FolderFileInfo>, String> {
         #[cfg(target_os = "android")]
         {
-            let payload = ListFolderContentsPayload { tree_uri };
+            let payload = ListFolderContentsPayload { tree_uri: _tree_uri };
             let res = self
                 .0
                 .run_mobile_plugin::<ListFolderContentsResponse>("listFolderContents", payload);
@@ -326,10 +328,10 @@ impl AndroidStorage {
         Err("getClipboard is only supported on Android".to_string())
     }
 
-    pub fn set_clipboard(&self, content: String) -> Result<(), String> {
+    pub fn set_clipboard(&self, _content: String) -> Result<(), String> {
         #[cfg(target_os = "android")]
         {
-            let payload = SetClipboardPayload { content };
+            let payload = SetClipboardPayload { content: _content };
             let res = self
                 .0
                 .run_mobile_plugin::<SetClipboardResponse>("setClipboard", payload);

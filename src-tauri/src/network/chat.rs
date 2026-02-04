@@ -32,6 +32,7 @@ impl WsWriter {
 }
 
 pub struct ChatConnection {
+    #[allow(dead_code)]
     pub ip: String,
     pub writer: Arc<Mutex<WsWriter>>,
 }

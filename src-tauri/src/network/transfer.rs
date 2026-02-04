@@ -352,7 +352,6 @@ pub struct FolderFile {
 #[tauri::command]
 /// 桌面端：读取文件夹内所有文件
 pub async fn list_folder_files(folder_path: String) -> Result<Vec<FolderFile>, String> {
-    use std::fs;
     use std::path::Path;
 
     let root = Path::new(&folder_path);
@@ -580,6 +579,7 @@ pub async fn send_files_android(
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 pub struct FolderFileToSend {
     pub uri: String,
     pub name: String,
@@ -868,7 +868,7 @@ async fn handle_websocket_connection(
     stream: tokio::net::TcpStream,
     save_dir: String,
     window: Window,
-    app: AppHandle,
+    #[allow(unused_variables)] app: AppHandle,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let ws_config = WebSocketConfig {
         max_message_size: None,

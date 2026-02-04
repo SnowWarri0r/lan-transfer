@@ -38,6 +38,7 @@ impl ClipboardWsWriter {
 }
 
 pub struct ClipboardConnection {
+    #[allow(dead_code)]
     pub ip: String,
     pub writer: Arc<Mutex<ClipboardWsWriter>>,
 }
