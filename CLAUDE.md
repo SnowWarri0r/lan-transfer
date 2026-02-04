@@ -89,6 +89,8 @@ listen<Device[]>('devices-updated', (event) => {
   - `get_local_ip()` - Get local network IP
   - `get_download_dir()` - Get system download directory
   - `select_folder()` - Native folder picker dialog (desktop: tauri-plugin-dialog, Android: SAF)
+  - `list_folder_files()` - Desktop: recursively list all files in a folder with relative paths
+  - `send_folder_desktop()` - Desktop: send entire folder via backend WebSocket
 - `network/chat.rs` - Chat network logic:
   - `start_chat_server()` - WebSocket chat server (dual server/client architecture)
   - `connect_to_chat()` - Connect to remote chat server
@@ -123,7 +125,7 @@ listen<Device[]>('devices-updated', (event) => {
   - `writeChunk` - Writes base64-encoded data to the OutputStream for a given handle
   - `closeWriter` - Flushes and closes the OutputStream
   - `deleteDocument` - Deletes a document by URI via `DocumentsContract.deleteDocument` (used for incomplete transfer cleanup)
-- `com/tauri_app/app/MainActivity.kt` - Acquires `WifiManager.MulticastLock` for UDP multicast discovery
+- `com/tauri_app/app/MainActivity.kt` - Acquires `WifiManager.MulticastLock` for UDP multicast discovery + handles Android back button via `OnBackPressedDispatcher`
 
 **Important:** Use `ACTION_OPEN_DOCUMENT` instead of `ACTION_GET_CONTENT` for multi-select - better device compatibility and doesn't require persistable permissions.
 
@@ -606,3 +608,39 @@ static CURRENT_SAVE_DIR: Mutex<String> = Mutex::new(String::new());
 - **Android default save directory:** Changed from app-internal directory to `/storage/emulated/0/Download`
 - **Broken pipe handling:** Android sender detects receiver cancel by reading Close(4001) from buffer after write error, with frontend fallback for "Broken pipe" / "Connection reset"
 - **Simplified send UI:** Merged overall progress bar and "Sending to IP" status into one section, removed redundant status bar during desktop multi-file sending
+
+### Folder Transfer
+
+- **Desktop folder selection:** Uses native Tauri folder picker dialog (`select_folder()`) instead of browser's `webkitdirectory` input
+- **Backend-driven sending:** Desktop uses `send_folder_desktop()` Rust command to read and send files directly (avoids `fetch('asset://...')` issues)
+- **Directory structure preserved:** Files sent with `relative_path` field in metadata, receiver creates subdirectories as needed
+- **Path sanitization:** `sanitize_relative_path()` function prevents path traversal attacks (rejects `..`, null bytes)
+- **Android folder send:** Uses `pick_folder_for_send()` + `list_folder_contents()` to enumerate files via SAF
+- **Android folder receive:** Uses `find_or_create_subdirectory()` to create nested directories in SAF tree
+
+### Android Back Button Handling
+
+Android back button/gesture is handled via `OnBackPressedDispatcher` in `MainActivity.kt`:
+
+```kotlin
+onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+    override fun handleOnBackPressed() {
+        val webView = findWebView(findViewById(android.R.id.content))
+        webView?.evaluateJavascript(
+            "(function() { if (typeof window.__TAURI_BACK_HANDLER__ === 'function') { return window.__TAURI_BACK_HANDLER__(); } return true; })()"
+        ) { result ->
+            if (result == "true") {
+                isEnabled = false
+                onBackPressedDispatcher.onBackPressed()
+            }
+        }
+    }
+})
+```
+
+**Frontend handler (`App.tsx`):**
+- Defines `window.__TAURI_BACK_HANDLER__()` function
+- Returns `false` to prevent exit (handled internally), `true` to allow exit
+- Navigation: Chat session → disconnect, Other modes → return to select mode
+- Double-press to exit: Shows toast "再按一次退出", exits if pressed again within 2 seconds
+- Uses `useRef` for `lastBackPressRef` to track last press time (avoids closure issues)

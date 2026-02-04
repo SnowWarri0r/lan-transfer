@@ -28,10 +28,12 @@ Select a file, pick a device, and send — no cloud, no account, no internet req
 - **Clipboard Sync** — Auto-sync clipboard content across devices with history tracking
 - **Multi-Language** — Built-in i18n support (English & Chinese)
 - **Multi-File Transfer** — Send multiple files in one batch with queue management
+- **Folder Transfer** — Send entire folders with directory structure preserved
 - **Progress Tracking** — Real-time progress bars on both sender and receiver sides
 - **Cancellable Transfers** — Both sender and receiver can cancel anytime, with cross-device notification and auto-cleanup
 - **Drag & Drop** — Drag files directly to the app (desktop)
 - **Android Multi-Select** — Native file picker with multi-select support
+- **Android Back Button** — Double-press to exit with toast notification
 - **No Setup** — No server, no registration, just open and go
 - **Large File Support** — Streaming transfer with backpressure, handles files of any size
 - **Android SAF** — Full Storage Access Framework support for modern Android scoped storage
@@ -158,7 +160,7 @@ src-tauri/gen/android/.../
   app/tauri/storage/
     StoragePlugin.kt   # Android SAF: folder picker, file write via DocumentsContract
   com/tauri_app/app/
-    MainActivity.kt    # Multicast lock for UDP discovery on Android
+    MainActivity.kt    # Multicast lock + back button handling on Android
 ```
 
 ## Network Ports
