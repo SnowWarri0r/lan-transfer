@@ -29,6 +29,36 @@ struct FileMeta {
     index: u32,
     #[serde(default)]
     total: u32,
+    #[serde(default)]
+    relative_path: Option<String>,
+}
+
+/// Sanitize relative path to prevent path traversal attacks.
+/// Returns None if the path is invalid or attempts directory traversal.
+fn sanitize_relative_path(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+
+    // Normalize path separators
+    let normalized = path.replace('\\', "/");
+
+    // Split into components and validate each
+    let mut components: Vec<&str> = Vec::new();
+    for component in normalized.split('/') {
+        match component {
+            "" | "." => continue,  // Skip empty and current dir
+            ".." => return None,   // Reject parent dir traversal
+            c if c.contains('\0') => return None,  // Reject null bytes
+            c => components.push(c),
+        }
+    }
+
+    if components.is_empty() {
+        return None;
+    }
+
+    Some(components.join("/"))
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -311,6 +341,103 @@ pub async fn pick_multiple_files(app: AppHandle) -> Result<Vec<String>, String> 
     }
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct FolderFile {
+    pub path: String,
+    pub name: String,
+    pub relative_path: String,
+    pub size: u64,
+}
+
+#[tauri::command]
+/// 桌面端：读取文件夹内所有文件
+pub async fn list_folder_files(folder_path: String) -> Result<Vec<FolderFile>, String> {
+    use std::fs;
+    use std::path::Path;
+
+    let root = Path::new(&folder_path);
+    if !root.is_dir() {
+        return Err("Not a directory".to_string());
+    }
+
+    let root_name = root.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let mut files = Vec::new();
+    collect_files(root, &root_name, &mut files)?;
+    Ok(files)
+}
+
+fn collect_files(dir: &std::path::Path, relative_base: &str, files: &mut Vec<FolderFile>) -> Result<(), String> {
+    use std::fs;
+
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            let dir_name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let new_base = format!("{}/{}", relative_base, dir_name);
+            collect_files(&path, &new_base, files)?;
+        } else if path.is_file() {
+            let file_name = path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+
+            files.push(FolderFile {
+                path: path.to_string_lossy().to_string(),
+                name: file_name.clone(),
+                relative_path: format!("{}/{}", relative_base, file_name),
+                size: metadata.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct AndroidFolderFile {
+    pub uri: String,
+    pub name: String,
+    pub relative_path: String,
+    pub size: u64,
+}
+
+#[tauri::command]
+/// Android: 选择文件夹并列出所有文件（用于发送）
+pub async fn pick_folder_for_send(app: AppHandle) -> Result<Vec<AndroidFolderFile>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let storage = app.state::<AndroidStorage>();
+
+        // First pick a folder
+        let folder_uri = storage.pick_folder()?;
+        let folder_uri = folder_uri.ok_or("No folder selected")?;
+
+        // Then list all files recursively
+        let files = storage.list_folder_contents(folder_uri)?;
+
+        Ok(files.into_iter().map(|f| AndroidFolderFile {
+            uri: f.uri,
+            name: f.name,
+            relative_path: f.relative_path,
+            size: f.size,
+        }).collect())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("pick_folder_for_send is only supported on Android".to_string())
+    }
+}
+
 #[tauri::command]
 /// Android: 从 content:// URI 发送多个文件
 pub async fn send_files_android(
@@ -452,6 +579,249 @@ pub async fn send_files_android(
     }
 }
 
+#[derive(Deserialize)]
+pub struct FolderFileToSend {
+    pub uri: String,
+    pub name: String,
+    pub relative_path: String,
+    pub size: u64,
+}
+
+#[tauri::command]
+/// Android: 发送文件夹中的文件（带相对路径）
+pub async fn send_folder_android(
+    files: Vec<FolderFileToSend>,
+    target_ip: String,
+    window: Window,
+    app: AppHandle,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        use tokio_tungstenite::connect_async;
+        use base64::{engine::general_purpose, Engine as _};
+
+        CANCEL_SENDING.store(false, Ordering::SeqCst);
+
+        let storage = app.state::<AndroidStorage>();
+        let total = files.len() as u32;
+
+        for (index, file_info) in files.iter().enumerate() {
+            if CANCEL_SENDING.load(Ordering::SeqCst) {
+                CANCEL_SENDING.store(false, Ordering::SeqCst);
+                return Err("Cancelled by user".to_string());
+            }
+
+            window.emit("file-sending", &file_info.name)
+                .map_err(|e| format!("Failed to emit event: {}", e))?;
+
+            let ws_url = format!("ws://{}:7878", target_ip);
+            let request = ws_url.into_client_request()
+                .map_err(|e| format!("Failed to create request: {}", e))?;
+
+            let (ws_stream, _) = connect_async(request).await
+                .map_err(|e| format!("Failed to connect to {}: {}", target_ip, e))?;
+
+            let (mut write, mut read) = ws_stream.split();
+
+            // Send metadata with relative_path
+            let meta = serde_json::json!({
+                "name": file_info.name,
+                "size": file_info.size,
+                "index": index,
+                "total": total,
+                "relative_path": file_info.relative_path,
+            });
+            let meta_str = serde_json::to_string(&meta)
+                .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
+
+            write.send(Message::Text(meta_str)).await
+                .map_err(|e| format!("Failed to send metadata: {}", e))?;
+
+            const CHUNK_SIZE: i32 = 256 * 1024;
+            let mut offset: u64 = 0;
+            let mut bytes_sent: u64 = 0;
+
+            loop {
+                if CANCEL_SENDING.load(Ordering::SeqCst) {
+                    let _ = write.send(Message::Close(None)).await;
+                    CANCEL_SENDING.store(false, Ordering::SeqCst);
+                    return Err("Cancelled by user".to_string());
+                }
+
+                let (base64_data, bytes_read) = storage.read_uri_chunk(
+                    file_info.uri.clone(),
+                    offset,
+                    CHUNK_SIZE
+                ).map_err(|e| format!("Failed to read chunk: {}", e))?;
+
+                if bytes_read == 0 {
+                    break;
+                }
+
+                let binary_data = general_purpose::STANDARD.decode(&base64_data)
+                    .map_err(|e| format!("Failed to decode base64: {}", e))?;
+
+                if let Err(e) = write.send(Message::Binary(binary_data)).await {
+                    if let Ok(Some(Ok(Message::Close(Some(frame))))) =
+                        tokio::time::timeout(Duration::from_millis(500), read.next()).await
+                    {
+                        let code: u16 = frame.code.into();
+                        if code == 4001 {
+                            return Err("Cancelled by receiver".to_string());
+                        }
+                    }
+                    return Err(format!("Failed to send chunk: {}", e));
+                }
+
+                offset += bytes_read as u64;
+                bytes_sent += bytes_read as u64;
+
+                let percentage = (bytes_sent as f64 / file_info.size as f64) * 100.0;
+                let _ = window.emit("file-transfer-progress", FileProgress {
+                    file_name: file_info.name.clone(),
+                    bytes_received: bytes_sent,
+                    total_bytes: file_info.size,
+                    percentage,
+                });
+
+                if bytes_sent >= file_info.size {
+                    break;
+                }
+            }
+
+            write.send(Message::Close(None)).await
+                .map_err(|e| format!("Failed to close connection: {}", e))?;
+
+            if let Some(Ok(Message::Close(Some(frame)))) = read.next().await {
+                let code: u16 = frame.code.into();
+                if code == 4001 {
+                    return Err("Cancelled by receiver".to_string());
+                }
+            }
+
+            window.emit("file-sent", &file_info.name)
+                .map_err(|e| format!("Failed to emit event: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (files, target_ip, window, app);
+        Err("send_folder_android is only supported on Android".to_string())
+    }
+}
+
+#[tauri::command]
+/// 桌面端：发送文件夹
+pub async fn send_folder_desktop(
+    folder_path: String,
+    target_ip: String,
+    window: Window,
+) -> Result<(), String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::connect_async;
+    use tokio::fs::File as TokioFile;
+    use tokio::io::AsyncReadExt;
+
+    // Reset cancel flag
+    CANCEL_SENDING.store(false, Ordering::SeqCst);
+
+    // Get file list
+    let files = list_folder_files(folder_path).await?;
+    if files.is_empty() {
+        return Err("Empty folder".to_string());
+    }
+
+    let total = files.len() as u32;
+
+    for (index, file_info) in files.iter().enumerate() {
+        if CANCEL_SENDING.load(Ordering::SeqCst) {
+            CANCEL_SENDING.store(false, Ordering::SeqCst);
+            return Err("Cancelled by user".to_string());
+        }
+
+        window.emit("file-sending", &file_info.name)
+            .map_err(|e| format!("Failed to emit event: {}", e))?;
+
+        let ws_url = format!("ws://{}:7878", target_ip);
+        let request = ws_url.into_client_request()
+            .map_err(|e| format!("Failed to create request: {}", e))?;
+
+        let (ws_stream, _) = connect_async(request).await
+            .map_err(|e| format!("Failed to connect to {}: {}", target_ip, e))?;
+
+        let (mut write, mut read) = ws_stream.split();
+
+        // Send metadata
+        let meta = serde_json::json!({
+            "name": file_info.name,
+            "size": file_info.size,
+            "index": index,
+            "total": total,
+            "relative_path": file_info.relative_path,
+        });
+        let meta_str = serde_json::to_string(&meta)
+            .map_err(|e| format!("Failed to serialize metadata: {}", e))?;
+
+        write.send(Message::Text(meta_str)).await
+            .map_err(|e| format!("Failed to send metadata: {}", e))?;
+
+        // Read and send file
+        let mut file = TokioFile::open(&file_info.path).await
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+
+        let mut buffer = vec![0u8; 256 * 1024];
+        let mut bytes_sent: u64 = 0;
+
+        loop {
+            if CANCEL_SENDING.load(Ordering::SeqCst) {
+                let _ = write.send(Message::Close(None)).await;
+                CANCEL_SENDING.store(false, Ordering::SeqCst);
+                return Err("Cancelled by user".to_string());
+            }
+
+            let n = file.read(&mut buffer).await
+                .map_err(|e| format!("Failed to read file: {}", e))?;
+
+            if n == 0 {
+                break;
+            }
+
+            write.send(Message::Binary(buffer[..n].to_vec())).await
+                .map_err(|e| format!("Failed to send chunk: {}", e))?;
+
+            bytes_sent += n as u64;
+
+            let percentage = (bytes_sent as f64 / file_info.size as f64) * 100.0;
+            let _ = window.emit("file-transfer-progress", FileProgress {
+                file_name: file_info.name.clone(),
+                bytes_received: bytes_sent,
+                total_bytes: file_info.size,
+                percentage,
+            });
+        }
+
+        write.send(Message::Close(None)).await
+            .map_err(|e| format!("Failed to close connection: {}", e))?;
+
+        // Check for receiver cancel
+        if let Some(Ok(Message::Close(Some(frame)))) = read.next().await {
+            let code: u16 = frame.code.into();
+            if code == 4001 {
+                return Err("Cancelled by receiver".to_string());
+            }
+        }
+
+        window.emit("file-sent", &file_info.name)
+            .map_err(|e| format!("Failed to emit event: {}", e))?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 pub fn start_websocket_server(save_dir: String, window: Window, app: AppHandle) {
     // 始终更新保存目录（即使服务器已在运行）
@@ -528,7 +898,8 @@ async fn handle_websocket_connection(
         match msg_result? {
             Message::Text(json_str) => {
                 if let Ok(meta) = serde_json::from_str::<FileMeta>(&json_str) {
-                    file_name = Some(meta.name.clone());
+                    // Use relative_path for display if available, otherwise use name
+                    file_name = Some(meta.relative_path.clone().unwrap_or_else(|| meta.name.clone()));
                     total_bytes = Some(meta.size);
                     bytes_received = 0;
                     last_progress_emit = 0;
@@ -544,7 +915,38 @@ async fn handle_websocket_connection(
                     #[cfg(target_os = "android")]
                     if is_content_uri {
                         let storage = app.state::<AndroidStorage>();
-                        match storage.open_writer(save_dir.clone(), meta.name.clone()) {
+
+                        // Handle relative_path for Android SAF
+                        let target_tree_uri = if let Some(ref rel_path) = meta.relative_path {
+                            if let Some(sanitized) = sanitize_relative_path(rel_path) {
+                                // Extract parent directory from relative path
+                                let path = std::path::Path::new(&sanitized);
+                                if let Some(parent) = path.parent() {
+                                    let parent_str = parent.to_string_lossy();
+                                    if !parent_str.is_empty() {
+                                        // Create subdirectories via SAF
+                                        match storage.find_or_create_subdirectory(save_dir.clone(), parent_str.to_string()) {
+                                            Ok(sub_uri) => sub_uri,
+                                            Err(e) => {
+                                                eprintln!("Failed to create subdirectory {}: {}", parent_str, e);
+                                                save_dir.clone()
+                                            }
+                                        }
+                                    } else {
+                                        save_dir.clone()
+                                    }
+                                } else {
+                                    save_dir.clone()
+                                }
+                            } else {
+                                eprintln!("Invalid relative path: {}", rel_path);
+                                save_dir.clone()
+                            }
+                        } else {
+                            save_dir.clone()
+                        };
+
+                        match storage.open_writer(target_tree_uri, meta.name.clone()) {
                             Ok((handle, uri)) => {
                                 writer_handle = Some(handle);
                                 document_uri = Some(uri);
@@ -557,8 +959,24 @@ async fn handle_websocket_connection(
                         continue;
                     }
 
+                    // Desktop/Android non-SAF: handle relative_path by creating parent directories
                     let mut full_path = PathBuf::from(&save_dir);
-                    full_path.push(&meta.name);
+                    if let Some(ref rel_path) = meta.relative_path {
+                        if let Some(sanitized) = sanitize_relative_path(rel_path) {
+                            full_path.push(&sanitized);
+                            // Create parent directories if needed
+                            if let Some(parent) = full_path.parent() {
+                                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                                    eprintln!("Failed to create directory {}: {}", parent.display(), e);
+                                }
+                            }
+                        } else {
+                            eprintln!("Invalid relative path: {}, saving to root", rel_path);
+                            full_path.push(&meta.name);
+                        }
+                    } else {
+                        full_path.push(&meta.name);
+                    }
 
                     match File::create(&full_path).await {
                         Ok(f) => {

@@ -8,7 +8,8 @@
     "disconnect": "断开",
     "connected": "已连接",
     "disconnected": "未连接",
-    "copied": "已复制"
+    "copied": "已复制",
+    "pressAgainToExit": "再按一次退出"
   },
   "mode": {
     "title": "局域网文件传输",
@@ -25,6 +26,7 @@
   "send": {
     "title": "发送文件",
     "selectFile": "选择文件",
+    "selectFolder": "选择文件夹",
     "selected": "已选择: ",
     "devices": "局域网设备",
     "manualIp": "或手动输入 IP 地址",

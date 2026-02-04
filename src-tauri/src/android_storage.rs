@@ -90,6 +90,35 @@ struct DeleteDocumentResponse {
     ok: bool,
 }
 
+#[derive(Serialize)]
+struct FindOrCreateSubdirectoryPayload {
+    tree_uri: String,
+    relative_path: String,
+}
+
+#[derive(Deserialize)]
+struct FindOrCreateSubdirectoryResponse {
+    uri: String,
+}
+
+#[derive(Serialize)]
+struct ListFolderContentsPayload {
+    tree_uri: String,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub struct FolderFileInfo {
+    pub uri: String,
+    pub name: String,
+    pub relative_path: String,
+    pub size: u64,
+}
+
+#[derive(Deserialize)]
+struct ListFolderContentsResponse {
+    files: Vec<FolderFileInfo>,
+}
+
 #[derive(Deserialize)]
 struct GetClipboardResponse {
     content: String,
@@ -251,6 +280,36 @@ impl AndroidStorage {
         }
         #[allow(unreachable_code)]
         Err("deleteDocument is only supported on Android".to_string())
+    }
+
+    pub fn find_or_create_subdirectory(&self, tree_uri: String, relative_path: String) -> Result<String, String> {
+        #[cfg(target_os = "android")]
+        {
+            let payload = FindOrCreateSubdirectoryPayload { tree_uri, relative_path };
+            let res = self
+                .0
+                .run_mobile_plugin::<FindOrCreateSubdirectoryResponse>("findOrCreateSubdirectory", payload);
+            return res
+                .map(|r| r.uri)
+                .map_err(|e| format!("findOrCreateSubdirectory failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("findOrCreateSubdirectory is only supported on Android".to_string())
+    }
+
+    pub fn list_folder_contents(&self, tree_uri: String) -> Result<Vec<FolderFileInfo>, String> {
+        #[cfg(target_os = "android")]
+        {
+            let payload = ListFolderContentsPayload { tree_uri };
+            let res = self
+                .0
+                .run_mobile_plugin::<ListFolderContentsResponse>("listFolderContents", payload);
+            return res
+                .map(|r| r.files)
+                .map_err(|e| format!("listFolderContents failed: {e}"));
+        }
+        #[allow(unreachable_code)]
+        Err("listFolderContents is only supported on Android".to_string())
     }
 
     pub fn get_clipboard(&self) -> Result<String, String> {

@@ -8,7 +8,8 @@
     "disconnect": "Disconnect",
     "connected": "Connected",
     "disconnected": "Disconnected",
-    "copied": "Copied"
+    "copied": "Copied",
+    "pressAgainToExit": "Press again to exit"
   },
   "mode": {
     "title": "LAN File Transfer",
@@ -25,6 +26,7 @@
   "send": {
     "title": "Send File",
     "selectFile": "Select File",
+    "selectFolder": "Select Folder",
     "selected": "Selected: ",
     "devices": "LAN Devices",
     "manualIp": "Or Enter IP Manually",

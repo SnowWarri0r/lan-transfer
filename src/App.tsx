@@ -44,6 +44,7 @@ interface FileQueueItem {
   bytesTransferred: number;
   speed: number;
   error?: string;
+  relativePath?: string;
 }
 
 type Mode = 'select' | 'send' | 'receive' | 'chat' | 'clipboard';
@@ -126,6 +127,7 @@ export default function App() {
   const chatConnectedRef = useRef<boolean>(false);
   const activeChatIpRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   // Clipboard sync state
   const [clipboardHistory, setClipboardHistory] = useState<ClipboardHistoryItem[]>([]);
@@ -137,6 +139,10 @@ export default function App() {
 
   // 检测是否为 Android 平台
   const [isAndroid, setIsAndroid] = useState<boolean>(false);
+
+  // 退出提示 toast
+  const [showExitToast, setShowExitToast] = useState<boolean>(false);
+  const lastBackPressRef = useRef<number>(0);
 
   // 根据语言设置窗口标题
   useEffect(() => {
@@ -157,12 +163,47 @@ export default function App() {
     checkPlatform();
   }, []);
 
+  // Store mode in ref for back button handler
+  const modeRef = useRef<Mode>(mode);
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
   useEffect(() => {
     invoke<string>('get_local_ip')
       .then(ip => setLocalIp(ip))
       .catch(err => setLocalIp(t('error.fetchIpFailed') + err));
 
     invoke('start_discovery');
+
+    // Handle Android back button via custom window function
+    // Called from MainActivity.kt onBackPressed
+    (window as unknown as { __TAURI_BACK_HANDLER__: () => boolean }).__TAURI_BACK_HANDLER__ = () => {
+      // If in chat mode with active chat, go back to device selection first
+      if (modeRef.current === 'chat' && activeChatIpRef.current) {
+        handleDisconnectChat();
+        return false;
+      }
+      // If not on select screen, go back to select
+      if (modeRef.current !== 'select') {
+        if (modeRef.current === 'chat') {
+          handleLeaveChatMode();
+        } else if (modeRef.current === 'clipboard') {
+          handleLeaveClipboardMode();
+        }
+        setMode('select');
+        return false;
+      }
+      // On select screen, double-press to exit
+      const now = Date.now();
+      if (now - lastBackPressRef.current < 2000) {
+        return true; // Exit app
+      }
+      lastBackPressRef.current = now;
+      setShowExitToast(true);
+      setTimeout(() => setShowExitToast(false), 2000);
+      return false;
+    };
 
     const unlistenDevices = listen<Device[]>('devices-updated', (event) => {
       setDevices(event.payload);
@@ -387,6 +428,57 @@ export default function App() {
     }
   };
 
+  // 桌面端发送模式：选择文件夹路径
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
+
+  const handlePickFolderForSend = async () => {
+    try {
+      const selected: string | null = await invoke("select_folder");
+      if (!selected) return;
+
+      // 获取文件列表用于显示
+      const files: Array<{path: string; name: string; relative_path: string; size: number}> =
+        await invoke("list_folder_files", { folderPath: selected });
+
+      if (files.length === 0) return;
+
+      // 保存文件夹路径，清空文件队列
+      setSelectedFolderPath(selected);
+      setFileQueue([]);
+    } catch (error) {
+      console.error('Failed to select folder for send:', error);
+    }
+  };
+
+  // 桌面端发送文件夹
+  const handleSendFolderDesktop = async (ip: string) => {
+    if (!selectedFolderPath) return;
+
+    try {
+      setSendStatus('sending');
+      setSendingTo(ip);
+      setSendingProgress(null);
+
+      await invoke('send_folder_desktop', { folderPath: selectedFolderPath, targetIp: ip });
+
+      setSendStatus('success');
+      setSendingProgress(null);
+      setSelectedFolderPath(null);
+    } catch (error) {
+      const errorMsg = String(error);
+      if (errorMsg.includes('Cancelled by user')) {
+        setSendStatus('idle');
+      } else if (errorMsg.includes('Cancelled by receiver')) {
+        setSendStatus('idle');
+        alert(t('send.cancelledByReceiver'));
+      } else {
+        setSendStatus('error');
+        alert(t('send.failed') + ': ' + error);
+      }
+      setSendingProgress(null);
+    }
+  };
+
   const handleQuickSelectPath = (path: string) => {
     setSaveDir(path);
     if (mode === 'receive') {
@@ -478,6 +570,54 @@ export default function App() {
     }
   };
 
+  const handleAndroidSendFolder = async (ip: string) => {
+    try {
+      setSendStatus('sending');
+      setSendingTo(ip);
+      setSendingProgress(null);
+
+      // 选择文件夹并获取文件列表
+      const files: Array<{uri: string; name: string; relative_path: string; size: number}> =
+        await invoke('pick_folder_for_send');
+
+      if (!files || files.length === 0) {
+        setSendStatus('idle');
+        return;
+      }
+
+      // 发送文件夹中的文件（带相对路径）
+      await invoke('send_folder_android', {
+        files: files.map(f => ({
+          uri: f.uri,
+          name: f.name,
+          relative_path: f.relative_path,
+          size: f.size
+        })),
+        targetIp: ip
+      });
+
+      setSendStatus('success');
+      setSendingProgress(null);
+      setSelectedDevice(null);
+    } catch (error) {
+      console.error('Android send folder failed:', error);
+      const errorMsg = String(error);
+
+      if (errorMsg.includes('Cancelled by user') || errorMsg.includes('No folder selected')) {
+        setSendStatus('idle');
+      } else if (errorMsg.includes('Cancelled by receiver') || errorMsg.includes('Broken pipe') || errorMsg.includes('Connection reset')) {
+        setSendStatus('idle');
+        alert(t('send.cancelledByReceiver'));
+      } else {
+        setSendStatus('error');
+        alert(t('send.failed') + ': ' + error);
+      }
+
+      setSendingProgress(null);
+      setSelectedDevice(null);
+    }
+  };
+
   const updateItemStatus = (
     index: number,
     status: FileQueueItem['status'],
@@ -502,7 +642,8 @@ export default function App() {
     ip: string,
     index: number,
     total: number,
-    queueIndex: number
+    queueIndex: number,
+    relativePath?: string
   ): Promise<void> => {
     const HIGH_WATER_MARK = 4 * 1024 * 1024;
 
@@ -518,13 +659,17 @@ export default function App() {
 
       socket.onopen = async () => {
         try {
-          // Send metadata with new fields
-          socket.send(JSON.stringify({
+          // Send metadata with new fields including relative_path
+          const metadata: Record<string, unknown> = {
             name: file.name,
             size: file.size,
             index,
             total
-          }));
+          };
+          if (relativePath) {
+            metadata.relative_path = relativePath;
+          }
+          socket.send(JSON.stringify(metadata));
 
           // Stream file data
           const reader = file.stream().getReader();
@@ -622,7 +767,7 @@ export default function App() {
       updateItemStatus(i, 'sending');
 
       try {
-        await sendSingleFile(fileQueue[i].file, ip, i, totalFiles, i);
+        await sendSingleFile(fileQueue[i].file, ip, i, totalFiles, i, fileQueue[i].relativePath);
         updateItemStatus(i, 'completed');
       } catch (error) {
         const errMsg = (error as Error).message;
@@ -823,6 +968,15 @@ export default function App() {
   if (mode === 'select') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-6">
+        {/* 退出提示 toast */}
+        {showExitToast && (
+          <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50">
+            <div className="bg-slate-800 text-white px-6 py-3 rounded-full shadow-lg text-sm">
+              {t('common.pressAgainToExit')}
+            </div>
+          </div>
+        )}
+
         <div className="w-full max-w-md space-y-6">
           <div className="text-center">
             <h1 className="text-3xl font-bold text-slate-800">{t('mode.title')}</h1>
@@ -942,11 +1096,51 @@ export default function App() {
                         }));
                         setFileQueue(items);
                       }
-                      // Reset input to allow selecting same files again
                       e.target.value = '';
                     }}
                     className="hidden"
                   />
+                  <input
+                    ref={folderInputRef}
+                    type="file"
+                    // @ts-expect-error webkitdirectory is not in standard types
+                    webkitdirectory=""
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      if (files.length > 0) {
+                        const items: FileQueueItem[] = files.map((file, index) => ({
+                          file,
+                          id: `${Date.now()}-${index}`,
+                          status: 'pending',
+                          progress: 0,
+                          bytesTransferred: 0,
+                          speed: 0,
+                          relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+                        }));
+                        setFileQueue(items);
+                      }
+                      e.target.value = '';
+                    }}
+                    className="hidden"
+                  />
+                  <div className="flex gap-2 mb-3">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex-1 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition font-medium text-sm"
+                    >
+                      {t('send.selectFile')}
+                    </button>
+                    <button
+                      onClick={() => folderInputRef.current?.click()}
+                      className="hidden"
+                    />
+                    <button
+                      onClick={handlePickFolderForSend}
+                      className="flex-1 px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition font-medium text-sm"
+                    >
+                      {t('send.selectFolder')}
+                    </button>
+                  </div>
                   <div
                     onDrop={(e) => {
                       e.preventDefault();
@@ -997,7 +1191,9 @@ export default function App() {
                     <div key={item.id} className="border rounded-lg p-3 bg-white">
                       <div className="flex justify-between items-center">
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium text-sm truncate">{item.file.name}</p>
+                          <p className="font-medium text-sm truncate" title={item.relativePath || item.file.name}>
+                            {item.relativePath || item.file.name}
+                          </p>
                           <p className="text-xs text-slate-500">
                             {formatBytes(item.file.size)}
                             {item.status === 'sending' && item.speed > 0 &&
@@ -1044,6 +1240,24 @@ export default function App() {
                       )}
                     </div>
                   ))}
+                </div>
+              )}
+
+              {/* 选中的文件夹（桌面端） */}
+              {!isAndroid && selectedFolderPath && (
+                <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-amber-700">{t('send.selected')}</p>
+                      <p className="text-xs text-slate-600 truncate">{selectedFolderPath}</p>
+                    </div>
+                    <button
+                      onClick={() => setSelectedFolderPath(null)}
+                      className="text-red-500 hover:text-red-700 text-lg ml-2"
+                    >
+                      🗑️
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1114,31 +1328,71 @@ export default function App() {
                   {devices.map((device) => (
                     <div
                       key={device.ip}
-                      className={`flex items-center justify-between p-3 border rounded-lg cursor-pointer transition ${
+                      className={`p-3 border rounded-lg cursor-pointer transition ${
                         selectedDevice?.ip === device.ip
                           ? 'border-blue-400 bg-blue-50'
                           : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                       }`}
                       onClick={() => setSelectedDevice(device)}
                     >
-                      <div>
-                        <p className="font-medium text-slate-800">{device.hostname}</p>
-                        <p className="text-sm text-slate-500 font-mono">{device.ip}</p>
+                      <div className="flex items-center justify-between">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-medium text-slate-800 truncate">{device.hostname}</p>
+                          <p className="text-sm text-slate-500 font-mono">{device.ip}</p>
+                        </div>
+                        {!isAndroid && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (selectedFolderPath) {
+                                handleSendFolderDesktop(device.ip);
+                              } else {
+                                handleSendToDevice(device);
+                              }
+                            }}
+                            disabled={(fileQueue.length === 0 && !selectedFolderPath) || sendStatus === 'sending'}
+                            className={`ml-2 px-4 py-2 text-sm font-medium rounded-lg transition flex-shrink-0 ${
+                              (fileQueue.length > 0 || selectedFolderPath) && sendStatus !== 'sending'
+                                ? 'bg-blue-500 text-white hover:bg-blue-600'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            }`}
+                          >
+                            {t('common.send')}
+                          </button>
+                        )}
                       </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleSendToDevice(device);
-                        }}
-                        disabled={(!isAndroid && fileQueue.length === 0) || sendStatus === 'sending'}
-                        className={`px-4 py-2 text-sm font-medium rounded-lg transition ${
-                          (isAndroid || fileQueue.length > 0) && sendStatus !== 'sending'
-                            ? 'bg-blue-500 text-white hover:bg-blue-600'
-                            : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                        }`}
-                      >
-                        {t('common.send')}
-                      </button>
+                      {isAndroid && (
+                        <div className="flex gap-2 mt-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSendToDevice(device);
+                            }}
+                            disabled={sendStatus === 'sending'}
+                            className={`flex-1 px-3 py-2 text-sm font-medium rounded-lg transition ${
+                              sendStatus !== 'sending'
+                                ? 'bg-blue-500 text-white hover:bg-blue-600'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            }`}
+                          >
+                            {t('send.selectFile')}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAndroidSendFolder(device.ip);
+                            }}
+                            disabled={sendStatus === 'sending'}
+                            className={`flex-1 px-3 py-2 text-sm font-medium rounded-lg transition ${
+                              sendStatus !== 'sending'
+                                ? 'bg-amber-500 text-white hover:bg-amber-600'
+                                : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            }`}
+                          >
+                            {t('send.selectFolder')}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1161,10 +1415,20 @@ export default function App() {
                   className="flex-1 min-w-0 px-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
                 <button
-                  onClick={handleSendManual}
-                  disabled={(!isAndroid && fileQueue.length === 0) || sendStatus === 'sending'}
+                  onClick={() => {
+                    if (!targetIp) {
+                      alert(t('send.enterIp'));
+                      return;
+                    }
+                    if (selectedFolderPath) {
+                      handleSendFolderDesktop(targetIp);
+                    } else {
+                      handleSendManual();
+                    }
+                  }}
+                  disabled={(!isAndroid && fileQueue.length === 0 && !selectedFolderPath) || sendStatus === 'sending'}
                   className={`px-4 py-2 font-medium rounded-lg transition whitespace-nowrap shrink-0 ${
-                    (!isAndroid && fileQueue.length === 0) || sendStatus === 'sending'
+                    (!isAndroid && fileQueue.length === 0 && !selectedFolderPath) || sendStatus === 'sending'
                       ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
                       : 'bg-blue-500 text-white hover:bg-blue-600'
                   }`}

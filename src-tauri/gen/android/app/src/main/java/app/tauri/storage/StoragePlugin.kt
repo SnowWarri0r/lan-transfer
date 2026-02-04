@@ -49,6 +49,17 @@ internal class DeleteDocumentArgs {
 }
 
 @InvokeArg
+internal class FindOrCreateSubdirectoryArgs {
+    lateinit var tree_uri: String
+    lateinit var relative_path: String
+}
+
+@InvokeArg
+internal class ListFolderContentsArgs {
+    lateinit var tree_uri: String
+}
+
+@InvokeArg
 internal class UriArgs {
     lateinit var uri: String
 }
@@ -396,6 +407,170 @@ class StoragePlugin(private val activity: Activity) : Plugin(activity) {
             val ret = JSObject()
             ret.put("name", "Android")
             invoke.resolve(ret)
+        }
+    }
+
+    @Command
+    fun findOrCreateSubdirectory(invoke: Invoke) {
+        val args = invoke.parseArgs(FindOrCreateSubdirectoryArgs::class.java)
+        val treeUri = Uri.parse(args.tree_uri)
+
+        try {
+            // Split relative path into components
+            val pathComponents = args.relative_path.split("/").filter { it.isNotEmpty() }
+            if (pathComponents.isEmpty()) {
+                val ret = JSObject()
+                ret.put("uri", args.tree_uri)
+                invoke.resolve(ret)
+                return
+            }
+
+            var currentUri = treeUri
+            var currentDocId = DocumentsContract.getTreeDocumentId(treeUri)
+
+            for (component in pathComponents) {
+                // Build document URI for current directory
+                val currentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, currentDocId)
+
+                // Try to find existing child directory
+                val childUri = findChildDocument(treeUri, currentDocId, component)
+
+                if (childUri != null) {
+                    // Directory exists, move into it
+                    currentDocId = DocumentsContract.getDocumentId(childUri)
+                } else {
+                    // Create new directory
+                    val newDirUri = DocumentsContract.createDocument(
+                        activity.contentResolver,
+                        currentDocUri,
+                        DocumentsContract.Document.MIME_TYPE_DIR,
+                        component
+                    )
+                    if (newDirUri == null) {
+                        invoke.reject("Failed to create directory: $component")
+                        return
+                    }
+                    currentDocId = DocumentsContract.getDocumentId(newDirUri)
+                }
+            }
+
+            // Build the final tree URI for the subdirectory
+            val finalUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, currentDocId)
+            // Convert document URI to tree URI format for use with openWriter
+            val treeUriString = treeUri.toString()
+            val baseTreeUri = treeUriString.substringBefore("/document/")
+            val finalTreeUri = "$baseTreeUri/tree/${Uri.encode(currentDocId)}"
+
+            val ret = JSObject()
+            ret.put("uri", finalTreeUri)
+            invoke.resolve(ret)
+        } catch (e: Exception) {
+            invoke.reject("Error creating subdirectory: ${e.message}")
+        }
+    }
+
+    private fun findChildDocument(treeUri: Uri, parentDocId: String, childName: String): Uri? {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+
+        activity.contentResolver.query(
+            childrenUri,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            ),
+            null, null, null
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val docId = cursor.getString(0)
+                val displayName = cursor.getString(1)
+                val mimeType = cursor.getString(2)
+
+                if (displayName == childName && mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    return DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                }
+            }
+        }
+        return null
+    }
+
+    @Command
+    fun listFolderContents(invoke: Invoke) {
+        val args = invoke.parseArgs(ListFolderContentsArgs::class.java)
+        val treeUri = Uri.parse(args.tree_uri)
+
+        try {
+            val files = mutableListOf<JSObject>()
+            val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
+
+            // Get root folder name
+            val rootDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootDocId)
+            var rootFolderName = ""
+            activity.contentResolver.query(
+                rootDocUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    rootFolderName = cursor.getString(0) ?: ""
+                }
+            }
+
+            // List files with root folder name as prefix
+            listFolderRecursive(treeUri, rootDocId, rootFolderName, files)
+
+            val ret = JSObject()
+            val jsonArray = JSONArray()
+            for (file in files) {
+                jsonArray.put(file)
+            }
+            ret.put("files", jsonArray)
+            invoke.resolve(ret)
+        } catch (e: Exception) {
+            invoke.reject("Error listing folder contents: ${e.message}")
+        }
+    }
+
+    private fun listFolderRecursive(
+        treeUri: Uri,
+        parentDocId: String,
+        relativePath: String,
+        files: MutableList<JSObject>
+    ) {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+
+        activity.contentResolver.query(
+            childrenUri,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_SIZE
+            ),
+            null, null, null
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val docId = cursor.getString(0)
+                val displayName = cursor.getString(1)
+                val mimeType = cursor.getString(2)
+                val size = cursor.getLong(3)
+
+                val childPath = if (relativePath.isEmpty()) displayName else "$relativePath/$displayName"
+
+                if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    // Recurse into subdirectory
+                    listFolderRecursive(treeUri, docId, childPath, files)
+                } else {
+                    // Add file to list
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                    val fileObj = JSObject()
+                    fileObj.put("uri", docUri.toString())
+                    fileObj.put("name", displayName)
+                    fileObj.put("relative_path", childPath)
+                    fileObj.put("size", size)
+                    files.add(fileObj)
+                }
+            }
         }
     }
 }
